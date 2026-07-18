@@ -12,6 +12,7 @@ import usersRouter from "./routes/users.js";
 assertConfig();
 
 const app = express();
+let server;
 
 app.use(cors({
   origin: config.clientOrigin,
@@ -59,12 +60,37 @@ app.use((error, _req, res, _next) => {
   res.status(status).json({ message });
 });
 
-const server = app.listen(config.port, async () => {
-  await connectToDatabase();
-  console.log(`HireLoop API running on http://localhost:${config.port}`);
-});
+async function startServer() {
+  try {
+    await connectToDatabase();
+
+    server = app.listen(config.port, () => {
+      console.log(`HireLoop API running on http://localhost:${config.port}`);
+    });
+
+    server.on("error", (error) => {
+      if (error.code === "EADDRINUSE") {
+        console.error(`Port ${config.port} is already in use. Change PORT in .env or stop the other process.`);
+        process.exit(1);
+      }
+
+      throw error;
+    });
+  } catch (error) {
+    console.error("Failed to start HireLoop API.");
+    console.error(`MongoDB connection failed for ${config.mongoUri}`);
+    console.error("Start MongoDB locally or set MONGODB_URI in hireloop-server/.env to your MongoDB Atlas connection string.");
+    console.error(error.message);
+    process.exit(1);
+  }
+}
 
 async function shutdown() {
+  if (!server) {
+    await closeDatabase();
+    process.exit(0);
+  }
+
   server.close(async () => {
     await closeDatabase();
     process.exit(0);
@@ -73,3 +99,5 @@ async function shutdown() {
 
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
+
+startServer();
