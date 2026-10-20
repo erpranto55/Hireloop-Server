@@ -6,7 +6,40 @@ import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = Router();
 
-// GET /api/applications - List applications with strict role scoping
+// Standardized application lifecycle stages
+export const APPLICATION_STATUSES = [
+  "Applied",
+  "Under Review",
+  "Shortlisted",
+  "Interview Scheduled",
+  "Offered",
+  "Accepted",
+  "Rejected",
+];
+
+// Valid transition rules for recruiters
+export const ALLOWED_STATUS_TRANSITIONS = {
+  "Applied": ["Under Review", "Rejected"],
+  "Under Review": ["Shortlisted", "Rejected"],
+  "Shortlisted": ["Interview Scheduled", "Offered", "Rejected"],
+  "Interview Scheduled": ["Offered", "Rejected"],
+  "Offered": ["Accepted", "Rejected"],
+  "Accepted": [], // Terminal stage
+  "Rejected": [], // Terminal stage
+};
+
+/**
+ * Strips private recruiter notes and internal review data from seeker responses.
+ */
+function sanitizeApplicationForSeeker(app) {
+  if (!app) return app;
+  const sanitized = { ...app };
+  delete sanitized.recruiterNotes;
+  delete sanitized.notesHistory;
+  return sanitized;
+}
+
+// GET /api/applications - List applications with strict role scoping and note redaction
 router.get("/", requireAuth, asyncHandler(async (req, res) => {
   const { seekerEmail, jobId, recruiterEmail, status } = req.query;
   const filter = {};
@@ -39,7 +72,9 @@ router.get("/", requireAuth, asyncHandler(async (req, res) => {
     if (jobId) filter.jobId = jobId;
   }
 
-  if (status) filter.status = status;
+  if (status) {
+    filter.status = new RegExp(`^${status}$`, "i");
+  }
 
   const applications = await db
     .collection("applications")
@@ -47,7 +82,41 @@ router.get("/", requireAuth, asyncHandler(async (req, res) => {
     .sort({ appliedAt: -1 })
     .toArray();
 
+  // Redact private recruiter notes if viewed by a seeker
+  if (userRole === "seeker") {
+    return res.json(applications.map(sanitizeApplicationForSeeker));
+  }
+
   res.json(applications);
+}));
+
+// GET /api/applications/:id - View single application details
+router.get("/:id", requireAuth, asyncHandler(async (req, res) => {
+  const _id = toObjectId(req.params.id);
+  if (!_id) return badRequest(res, "Invalid application id");
+
+  const db = getDb();
+  const application = await db.collection("applications").findOne({ _id });
+  if (!application) return notFound(res, "Application not found");
+
+  const userRole = (req.user.role || "").toLowerCase();
+  const userEmail = req.user.email.toLowerCase();
+
+  const isOwnerSeeker = application.seekerEmail?.toLowerCase() === userEmail;
+  const isOwnerRecruiter = application.recruiterEmail?.toLowerCase() === userEmail;
+  const isAdmin = userRole === "admin";
+
+  if (!isOwnerSeeker && !isOwnerRecruiter && !isAdmin) {
+    return res.status(403).json({
+      message: "Forbidden: You do not have permission to view this application.",
+    });
+  }
+
+  if (isOwnerSeeker && !isAdmin && !isOwnerRecruiter) {
+    return res.json(sanitizeApplicationForSeeker(application));
+  }
+
+  res.json(application);
 }));
 
 // POST /api/applications - Submit application (Seekers or Admin)
@@ -57,20 +126,55 @@ router.post("/", requireAuth, requireRole("seeker", "admin"), asyncHandler(async
   if (missing.length) return badRequest(res, `Missing required fields: ${missing.join(", ")}`);
 
   const isAdmin = (req.user.role || "").toLowerCase() === "admin";
-  const seekerEmail = isAdmin && req.body.seekerEmail ? req.body.seekerEmail : req.user.email;
+  const seekerEmail = isAdmin && req.body.seekerEmail ? req.body.seekerEmail.toLowerCase() : req.user.email.toLowerCase();
+  const seekerName = isAdmin && req.body.seekerName ? req.body.seekerName : (req.user.name || "Candidate");
 
   const db = getDb();
-  // Fetch job to ensure it exists, is active, and copy recruiterEmail
+
+  // Fetch job to ensure it exists and is currently active
   const jobObjectId = toObjectId(req.body.jobId);
   const job = await db.collection("jobs").findOne(jobObjectId ? { _id: jobObjectId } : { id: req.body.jobId });
   if (!job) return notFound(res, "Job listing not found");
 
+  if (job.status && job.status.toLowerCase() !== "active") {
+    return res.status(400).json({
+      message: "This job listing is no longer active and is not accepting applications.",
+    });
+  }
+
+  // Prevent duplicate applications for the same job by the same seeker
+  const existingApp = await db.collection("applications").findOne({
+    jobId: req.body.jobId,
+    seekerEmail: new RegExp(`^${seekerEmail}$`, "i"),
+  });
+
+  if (existingApp) {
+    return res.status(409).json({
+      message: "You have already submitted an application for this job listing.",
+      applicationId: existingApp._id,
+    });
+  }
+
+  // Sanitize input: Disallow client-provided privileged status or recruiter notes
   const application = {
-    ...req.body,
+    jobId: req.body.jobId,
+    jobTitle: job.title || req.body.jobTitle,
+    companyId: job.companyId || req.body.companyId || "",
+    companyName: job.companyName || req.body.companyName,
     seekerEmail,
-    seekerName: req.body.seekerName || req.user.name,
-    recruiterEmail: job.recruiterEmail || req.body.recruiterEmail,
-    status: "applied",
+    seekerName,
+    recruiterEmail: job.recruiterEmail ? job.recruiterEmail.toLowerCase() : (req.body.recruiterEmail || "").toLowerCase(),
+    resumeUrl: req.body.resumeUrl || "",
+    resumeFileId: req.body.resumeFileId || "",
+    coverLetter: req.body.coverLetter || "",
+    status: "Applied", // Always initialize to "Applied"
+    statusHistory: [
+      {
+        status: "Applied",
+        changedBy: req.user.email,
+        changedAt: new Date(),
+      },
+    ],
     appliedAt: new Date(),
     updatedAt: new Date(),
   };
@@ -84,11 +188,23 @@ router.post("/", requireAuth, requireRole("seeker", "admin"), asyncHandler(async
   created(res, { ...application, _id: result.insertedId });
 }));
 
-// PATCH /api/applications/:id/status - Review application (Recruiter or Admin only)
+// PATCH /api/applications/:id/status - Update application lifecycle status (Recruiter or Admin only)
 router.patch("/:id/status", requireAuth, asyncHandler(async (req, res) => {
   const _id = toObjectId(req.params.id);
   if (!_id) return badRequest(res, "Invalid application id");
   if (!req.body.status) return badRequest(res, "Status is required");
+
+  const newStatus = req.body.status.trim();
+  const matchedStatus = APPLICATION_STATUSES.find(
+    (s) => s.toLowerCase() === newStatus.toLowerCase()
+  );
+
+  if (!matchedStatus) {
+    return badRequest(
+      res,
+      `Invalid status: "${newStatus}". Permitted statuses are: ${APPLICATION_STATUSES.join(", ")}`
+    );
+  }
 
   const db = getDb();
   const application = await db.collection("applications").findOne({ _id });
@@ -103,13 +219,82 @@ router.patch("/:id/status", requireAuth, asyncHandler(async (req, res) => {
     });
   }
 
-  const result = await db
-    .collection("applications")
-    .findOneAndUpdate(
-      { _id },
-      { $set: { status: req.body.status, updatedAt: new Date() } },
-      { returnDocument: "after" },
-    );
+  // Validate state transitions for recruiters (Admin can override)
+  const currentStatus = application.status || "Applied";
+
+  if (!isAdmin && currentStatus.toLowerCase() !== matchedStatus.toLowerCase()) {
+    const allowed = ALLOWED_STATUS_TRANSITIONS[currentStatus] || [];
+    const isAllowed = allowed.some((s) => s.toLowerCase() === matchedStatus.toLowerCase());
+
+    if (!isAllowed) {
+      return res.status(400).json({
+        message: `Cannot transition application status from "${currentStatus}" to "${matchedStatus}". Permitted next stages: ${allowed.length ? allowed.join(", ") : "None (application is closed)"}.`,
+      });
+    }
+  }
+
+  const statusHistoryEntry = {
+    from: currentStatus,
+    to: matchedStatus,
+    changedBy: req.user.email,
+    changedAt: new Date(),
+    note: req.body.note || undefined,
+  };
+
+  const result = await db.collection("applications").findOneAndUpdate(
+    { _id },
+    {
+      $set: { status: matchedStatus, updatedAt: new Date() },
+      $push: { statusHistory: statusHistoryEntry },
+    },
+    { returnDocument: "after" }
+  );
+
+  res.json(result);
+}));
+
+// PATCH /api/applications/:id/notes - Add or edit private recruiter notes (Recruiter or Admin only)
+router.patch("/:id/notes", requireAuth, asyncHandler(async (req, res) => {
+  const _id = toObjectId(req.params.id);
+  if (!_id) return badRequest(res, "Invalid application id");
+
+  const notesText = typeof req.body.notes === "string" ? req.body.notes : req.body.note;
+  if (notesText === undefined) {
+    return badRequest(res, "Notes content is required.");
+  }
+
+  const db = getDb();
+  const application = await db.collection("applications").findOne({ _id });
+  if (!application) return notFound(res, "Application not found");
+
+  const isAdmin = (req.user.role || "").toLowerCase() === "admin";
+  const isRecruiterOwner = application.recruiterEmail?.toLowerCase() === req.user.email?.toLowerCase();
+
+  if (!isAdmin && !isRecruiterOwner) {
+    return res.status(403).json({
+      message: "Forbidden: Only the recruiter for this job or an administrator can modify private notes.",
+    });
+  }
+
+  const noteEntry = {
+    content: notesText,
+    author: req.user.email,
+    updatedAt: new Date(),
+  };
+
+  const result = await db.collection("applications").findOneAndUpdate(
+    { _id },
+    {
+      $set: {
+        recruiterNotes: notesText,
+        updatedAt: new Date(),
+      },
+      $push: {
+        notesHistory: noteEntry,
+      },
+    },
+    { returnDocument: "after" }
+  );
 
   res.json(result);
 }));

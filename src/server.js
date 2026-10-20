@@ -6,6 +6,7 @@ import applicationsRouter from "./routes/applications.js";
 import companiesRouter from "./routes/companies.js";
 import jobsRouter from "./routes/jobs.js";
 import paymentsRouter from "./routes/payments.js";
+import resumesRouter from "./routes/resumes.js";
 import savedJobsRouter from "./routes/savedJobs.js";
 import usersRouter from "./routes/users.js";
 
@@ -46,6 +47,7 @@ app.get("/health", async (_req, res, next) => {
 app.use("/api/jobs", jobsRouter);
 app.use("/api/companies", companiesRouter);
 app.use("/api/applications", applicationsRouter);
+app.use("/api/resumes", resumesRouter);
 app.use("/api/saved-jobs", savedJobsRouter);
 app.use("/api/users", usersRouter);
 app.use("/api/payments", paymentsRouter);
