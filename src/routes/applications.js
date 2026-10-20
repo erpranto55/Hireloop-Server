@@ -3,6 +3,7 @@ import { getDb, toObjectId } from "../db.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { badRequest, created, notFound } from "../utils/http.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { getSeekerApplicationLimit } from "../config/plans.js";
 
 const router = Router();
 
@@ -153,6 +154,33 @@ router.post("/", requireAuth, requireRole("seeker", "admin"), asyncHandler(async
       message: "You have already submitted an application for this job listing.",
       applicationId: existingApp._id,
     });
+  }
+
+  // Check monthly application quota for job seekers
+  if (!isAdmin) {
+    const user = await db.collection("user").findOne({ email: new RegExp(`^${seekerEmail}$`, "i") });
+    const planName = user?.plan || "Free";
+    const limit = getSeekerApplicationLimit(planName);
+
+    if (limit !== Infinity) {
+      const startOfMonth = new Date();
+      startOfMonth.setDate(1);
+      startOfMonth.setHours(0, 0, 0, 0);
+
+      const monthlyCount = await db.collection("applications").countDocuments({
+        seekerEmail: new RegExp(`^${seekerEmail}$`, "i"),
+        appliedAt: { $gte: startOfMonth },
+      });
+
+      if (monthlyCount >= limit) {
+        return res.status(403).json({
+          message: `Monthly application limit reached for your ${planName} plan (${limit} applications allowed per month). Please upgrade your plan to apply to more jobs.`,
+          limit,
+          monthlyCount,
+          plan: planName,
+        });
+      }
+    }
   }
 
   // Sanitize input: Disallow client-provided privileged status or recruiter notes

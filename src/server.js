@@ -22,9 +22,18 @@ app.disable("x-powered-by");
 app.use(cors({
   origin: config.clientOrigin,
   credentials: true,
-  allowedHeaders: ["Content-Type", "Authorization"],
+  allowedHeaders: ["Content-Type", "Authorization", "stripe-signature"],
 }));
-app.use(express.json({ limit: "2mb" }));
+
+// Stripe webhook signature verification requires unparsed raw body
+app.use("/api/payments/webhook", express.raw({ type: "application/json" }));
+
+app.use(express.json({
+  limit: "2mb",
+  verify: (req, _res, buf) => {
+    req.rawBody = buf;
+  },
+}));
 app.use(rateLimiter({ windowMs: 60 * 1000, max: 120 }));
 
 app.get("/", (_req, res) => {

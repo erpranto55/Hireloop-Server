@@ -1,4 +1,4 @@
-﻿import dotenv from "dotenv";
+import dotenv from "dotenv";
 
 dotenv.config();
 
@@ -8,6 +8,8 @@ export const config = {
   clientOrigin: process.env.CLIENT_ORIGIN || "http://localhost:3000",
   mongoUri: process.env.MONGODB_URI,
   dbName: process.env.DB_NAME || "hireloop",
+  stripeSecretKey: process.env.STRIPE_SECRET_KEY || "",
+  stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET || "",
 };
 
 export function assertConfig() {

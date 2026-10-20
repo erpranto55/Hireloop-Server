@@ -81,6 +81,11 @@ router.patch("/:email", requireAuth, asyncHandler(async (req, res) => {
         message: "Forbidden: You cannot modify your own account standing.",
       });
     }
+    if (req.body.plan !== undefined && req.body.plan !== req.user.plan) {
+      return res.status(403).json({
+        message: "Forbidden: You cannot modify your own subscription plan directly.",
+      });
+    }
   }
 
   // Permitted profile fields for both self and admin
