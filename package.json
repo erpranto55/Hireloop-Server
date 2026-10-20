@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "hireloop-server",
   "version": "1.0.0",
   "description": "Backend API for the HireLoop job portal.",
@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "dev": "nodemon src/server.js",
-    "start": "node src/server.js"
+    "start": "node src/server.js",
+    "test": "node --test"
   },
   "dependencies": {
     "cors": "^2.8.5",

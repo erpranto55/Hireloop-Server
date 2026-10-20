@@ -1,4 +1,4 @@
-﻿import express from "express";
+import express from "express";
 import cors from "cors";
 import { assertConfig, config } from "./config.js";
 import { closeDatabase, connectToDatabase } from "./db.js";
@@ -9,16 +9,22 @@ import paymentsRouter from "./routes/payments.js";
 import savedJobsRouter from "./routes/savedJobs.js";
 import usersRouter from "./routes/users.js";
 
+import { rateLimiter } from "./middleware/rateLimiter.js";
+
 assertConfig();
 
 const app = express();
 let server;
 
+app.disable("x-powered-by");
+
 app.use(cors({
   origin: config.clientOrigin,
   credentials: true,
+  allowedHeaders: ["Content-Type", "Authorization"],
 }));
 app.use(express.json({ limit: "2mb" }));
+app.use(rateLimiter({ windowMs: 60 * 1000, max: 120 }));
 
 app.get("/", (_req, res) => {
   res.json({
@@ -50,8 +56,10 @@ app.use((req, res) => {
 
 app.use((error, _req, res, _next) => {
   const isDuplicate = error?.code === 11000;
-  const status = isDuplicate ? 409 : 500;
-  const message = isDuplicate ? "Duplicate record already exists" : error.message || "Internal server error";
+  const status = isDuplicate ? 409 : (error.status || 500);
+  const message = isDuplicate
+    ? "Duplicate record already exists"
+    : (config.nodeEnv === "production" && status === 500 ? "Internal server error" : (error.message || "Internal server error"));
 
   if (config.nodeEnv !== "test") {
     console.error(error);

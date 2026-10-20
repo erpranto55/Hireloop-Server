@@ -1,22 +1,41 @@
-﻿import { Router } from "express";
+import { Router } from "express";
 import { getDb, toObjectId } from "../db.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { badRequest, created, notFound } from "../utils/http.js";
+import { optionalAuth, requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = Router();
 
-router.get("/", asyncHandler(async (req, res) => {
+// GET /api/companies - Public view of approved companies, recruiter's own, or admin full list
+router.get("/", optionalAuth, asyncHandler(async (req, res) => {
   const { status = "approved", industry, recruiterEmail } = req.query;
   const filter = {};
+  const isAdmin = req.user && (req.user.role || "").toLowerCase() === "admin";
+  const isOwnerRecruiter = req.user && recruiterEmail && req.user.email.toLowerCase() === recruiterEmail.toLowerCase();
 
-  if (status !== "all") filter.status = status;
+  if (isAdmin) {
+    if (status !== "all") filter.status = status;
+  } else if (isOwnerRecruiter) {
+    // A recruiter can see their own company regardless of whether it's pending or approved
+    if (status !== "all") filter.status = status;
+  } else {
+    // General public and other users only see approved companies
+    filter.status = "approved";
+  }
+
   if (industry) filter.industry = industry;
-  if (recruiterEmail) filter.recruiterEmail = recruiterEmail;
+  if (recruiterEmail) filter.recruiterEmail = new RegExp(`^${recruiterEmail}$`, "i");
 
-  const companies = await getDb().collection("companies").find(filter).sort({ createdAt: -1 }).toArray();
+  const companies = await getDb()
+    .collection("companies")
+    .find(filter)
+    .sort({ createdAt: -1 })
+    .toArray();
+
   res.json(companies);
 }));
 
+// GET /api/companies/:id - Public company profile
 router.get("/:id", asyncHandler(async (req, res) => {
   const _id = toObjectId(req.params.id);
   if (!_id) return badRequest(res, "Invalid company id");
@@ -27,14 +46,19 @@ router.get("/:id", asyncHandler(async (req, res) => {
   res.json(company);
 }));
 
-router.post("/", asyncHandler(async (req, res) => {
-  const required = ["name", "industry", "location", "recruiterEmail"];
+// POST /api/companies - Create company (Recruiter or Admin)
+router.post("/", requireAuth, requireRole("recruiter", "admin"), asyncHandler(async (req, res) => {
+  const required = ["name", "industry", "location"];
   const missing = required.filter((field) => !req.body[field]);
   if (missing.length) return badRequest(res, `Missing required fields: ${missing.join(", ")}`);
 
+  const isAdmin = (req.user.role || "").toLowerCase() === "admin";
+  const recruiterEmail = isAdmin && req.body.recruiterEmail ? req.body.recruiterEmail : req.user.email;
+
   const company = {
     ...req.body,
-    status: "pending",
+    recruiterEmail,
+    status: isAdmin && req.body.status ? req.body.status : "pending",
     openJobs: 0,
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -44,19 +68,47 @@ router.post("/", asyncHandler(async (req, res) => {
   created(res, { ...company, _id: result.insertedId });
 }));
 
-router.patch("/:id", asyncHandler(async (req, res) => {
+// PATCH /api/companies/:id - Update company or approve standing
+router.patch("/:id", requireAuth, asyncHandler(async (req, res) => {
   const _id = toObjectId(req.params.id);
   if (!_id) return badRequest(res, "Invalid company id");
 
-  const result = await getDb()
-    .collection("companies")
-    .findOneAndUpdate(
-      { _id },
-      { $set: { ...req.body, updatedAt: new Date() } },
-      { returnDocument: "after" },
-    );
+  const db = getDb();
+  const existingCompany = await db.collection("companies").findOne({ _id });
+  if (!existingCompany) return notFound(res, "Company not found");
 
-  if (!result) return notFound(res, "Company not found");
+  const isAdmin = (req.user.role || "").toLowerCase() === "admin";
+  const isOwner = existingCompany.recruiterEmail?.toLowerCase() === req.user.email?.toLowerCase();
+
+  if (!isAdmin && !isOwner) {
+    return res.status(403).json({
+      message: "Forbidden: You do not have permission to edit this company.",
+    });
+  }
+
+  const updateFields = { ...req.body };
+  delete updateFields._id;
+
+  // Only admin can change company moderation status
+  if (updateFields.status !== undefined && !isAdmin) {
+    return res.status(403).json({
+      message: "Forbidden: Only platform administrators can update company verification status.",
+    });
+  }
+
+  // Non-admins cannot transfer company ownership
+  if (!isAdmin) {
+    delete updateFields.recruiterEmail;
+  }
+
+  updateFields.updatedAt = new Date();
+
+  const result = await db.collection("companies").findOneAndUpdate(
+    { _id },
+    { $set: updateFields },
+    { returnDocument: "after" },
+  );
+
   res.json(result);
 }));
 

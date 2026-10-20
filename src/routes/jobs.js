@@ -1,10 +1,12 @@
-﻿import { Router } from "express";
+import { Router } from "express";
 import { getDb, toObjectId } from "../db.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { badRequest, created, notFound } from "../utils/http.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = Router();
 
+// GET /api/jobs - Public job browsing
 router.get("/", asyncHandler(async (req, res) => {
   const { q, type, location, category, status = "active", recruiterEmail, companyId, limit = 30 } = req.query;
   const filter = {};
@@ -14,7 +16,7 @@ router.get("/", asyncHandler(async (req, res) => {
   if (location) filter.location = new RegExp(location, "i");
   if (category) filter.category = category;
   if (status !== "all") filter.status = status;
-  if (recruiterEmail) filter.recruiterEmail = recruiterEmail;
+  if (recruiterEmail) filter.recruiterEmail = new RegExp(`^${recruiterEmail}$`, "i");
   if (companyId) filter.companyId = companyId;
 
   const jobs = await getDb()
@@ -27,6 +29,7 @@ router.get("/", asyncHandler(async (req, res) => {
   res.json(jobs);
 }));
 
+// GET /api/jobs/:id - Public job detail
 router.get("/:id", asyncHandler(async (req, res) => {
   const _id = toObjectId(req.params.id);
   if (!_id) return badRequest(res, "Invalid job id");
@@ -37,13 +40,19 @@ router.get("/:id", asyncHandler(async (req, res) => {
   res.json(job);
 }));
 
-router.post("/", asyncHandler(async (req, res) => {
-  const required = ["title", "category", "type", "companyId", "companyName", "recruiterEmail"];
+// POST /api/jobs - Recruiter or Admin can post jobs
+router.post("/", requireAuth, requireRole("recruiter", "admin"), asyncHandler(async (req, res) => {
+  const required = ["title", "category", "type", "companyId", "companyName"];
   const missing = required.filter((field) => !req.body[field]);
   if (missing.length) return badRequest(res, `Missing required fields: ${missing.join(", ")}`);
 
+  const isAdmin = (req.user.role || "").toLowerCase() === "admin";
+  // Enforce recruiter email matches authenticated user unless admin
+  const recruiterEmail = isAdmin && req.body.recruiterEmail ? req.body.recruiterEmail : req.user.email;
+
   const job = {
     ...req.body,
+    recruiterEmail,
     status: req.body.status || "active",
     applicantsCount: 0,
     createdAt: new Date(),
@@ -54,27 +63,60 @@ router.post("/", asyncHandler(async (req, res) => {
   created(res, { ...job, _id: result.insertedId });
 }));
 
-router.patch("/:id", asyncHandler(async (req, res) => {
+// PATCH /api/jobs/:id - Update job (Owner recruiter or Admin only)
+router.patch("/:id", requireAuth, asyncHandler(async (req, res) => {
   const _id = toObjectId(req.params.id);
   if (!_id) return badRequest(res, "Invalid job id");
 
-  const result = await getDb()
-    .collection("jobs")
-    .findOneAndUpdate(
-      { _id },
-      { $set: { ...req.body, updatedAt: new Date() } },
-      { returnDocument: "after" },
-    );
+  const db = getDb();
+  const existingJob = await db.collection("jobs").findOne({ _id });
+  if (!existingJob) return notFound(res, "Job not found");
 
-  if (!result) return notFound(res, "Job not found");
+  const isAdmin = (req.user.role || "").toLowerCase() === "admin";
+  const isOwner = existingJob.recruiterEmail?.toLowerCase() === req.user.email?.toLowerCase();
+
+  if (!isAdmin && !isOwner) {
+    return res.status(403).json({
+      message: "Forbidden: You can only edit jobs posted by your account.",
+    });
+  }
+
+  const updateFields = { ...req.body };
+  delete updateFields._id;
+  // Non-admins cannot transfer ownership to another recruiter
+  if (!isAdmin) {
+    delete updateFields.recruiterEmail;
+  }
+  updateFields.updatedAt = new Date();
+
+  const result = await db.collection("jobs").findOneAndUpdate(
+    { _id },
+    { $set: updateFields },
+    { returnDocument: "after" },
+  );
+
   res.json(result);
 }));
 
-router.delete("/:id", asyncHandler(async (req, res) => {
+// DELETE /api/jobs/:id - Delete job (Owner recruiter or Admin only)
+router.delete("/:id", requireAuth, asyncHandler(async (req, res) => {
   const _id = toObjectId(req.params.id);
   if (!_id) return badRequest(res, "Invalid job id");
 
-  const result = await getDb().collection("jobs").deleteOne({ _id });
+  const db = getDb();
+  const existingJob = await db.collection("jobs").findOne({ _id });
+  if (!existingJob) return notFound(res, "Job not found");
+
+  const isAdmin = (req.user.role || "").toLowerCase() === "admin";
+  const isOwner = existingJob.recruiterEmail?.toLowerCase() === req.user.email?.toLowerCase();
+
+  if (!isAdmin && !isOwner) {
+    return res.status(403).json({
+      message: "Forbidden: You can only delete jobs posted by your account.",
+    });
+  }
+
+  const result = await db.collection("jobs").deleteOne({ _id });
   if (!result.deletedCount) return notFound(res, "Job not found");
 
   res.status(204).send();
