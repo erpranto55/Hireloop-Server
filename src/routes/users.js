@@ -3,6 +3,7 @@ import { getDb } from "../db.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { badRequest, notFound } from "../utils/http.js";
 import { requireAuth, sanitizeUser } from "../middleware/auth.js";
+import { recordAuditLog } from "../services/auditService.js";
 
 const router = Router();
 
@@ -102,7 +103,11 @@ router.patch("/:email", requireAuth, asyncHandler(async (req, res) => {
 
   updateData.updatedAt = new Date();
 
-  const result = await getDb()
+  const db = getDb();
+  const existingUser = await db.collection("user").findOne({ email: new RegExp(`^${targetEmail}$`, "i") });
+  if (!existingUser) return notFound(res, "User not found");
+
+  const result = await db
     .collection("user")
     .findOneAndUpdate(
       { email: new RegExp(`^${targetEmail}$`, "i") },
@@ -111,6 +116,46 @@ router.patch("/:email", requireAuth, asyncHandler(async (req, res) => {
     );
 
   if (!result) return notFound(res, "User not found");
+
+  // Record audit logs for sensitive administrator actions
+  if (isAdmin) {
+    if (updateData.status && updateData.status !== existingUser.status) {
+      recordAuditLog({
+        actor: req.user,
+        action: "user_status_changed",
+        targetType: "user",
+        targetId: existingUser._id?.toString(),
+        targetIdentifier: existingUser.email,
+        before: { status: existingUser.status },
+        after: { status: updateData.status },
+      });
+    }
+
+    if (updateData.role && updateData.role !== existingUser.role) {
+      recordAuditLog({
+        actor: req.user,
+        action: "user_role_changed",
+        targetType: "user",
+        targetId: existingUser._id?.toString(),
+        targetIdentifier: existingUser.email,
+        before: { role: existingUser.role },
+        after: { role: updateData.role },
+      });
+    }
+
+    if (updateData.plan && updateData.plan !== existingUser.plan) {
+      recordAuditLog({
+        actor: req.user,
+        action: "admin_plan_updated",
+        targetType: "user",
+        targetId: existingUser._id?.toString(),
+        targetIdentifier: existingUser.email,
+        before: { plan: existingUser.plan || "Free" },
+        after: { plan: updateData.plan },
+      });
+    }
+  }
+
   res.json(sanitizeUser(result));
 }));
 

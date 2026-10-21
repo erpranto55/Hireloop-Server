@@ -3,6 +3,7 @@ import { getDb, toObjectId } from "../db.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { badRequest, created, notFound } from "../utils/http.js";
 import { optionalAuth, requireAuth, requireRole } from "../middleware/auth.js";
+import { recordAuditLog } from "../services/auditService.js";
 
 const router = Router();
 
@@ -108,6 +109,18 @@ router.patch("/:id", requireAuth, asyncHandler(async (req, res) => {
     { $set: updateFields },
     { returnDocument: "after" },
   );
+
+  if (isAdmin && updateFields.status && updateFields.status !== existingCompany.status) {
+    recordAuditLog({
+      actor: req.user,
+      action: "company_moderated",
+      targetType: "company",
+      targetId: existingCompany._id.toString(),
+      targetIdentifier: existingCompany.name,
+      before: { status: existingCompany.status },
+      after: { status: updateFields.status },
+    });
+  }
 
   res.json(result);
 }));

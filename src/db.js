@@ -28,6 +28,13 @@ export async function connectToDatabase() {
     db.collection("notifications").createIndex({ recipientEmail: 1, idempotencyKey: 1 }, { unique: true, sparse: true }),
     db.collection("email_outbox").createIndex({ status: 1, nextAttemptAt: 1 }),
     db.collection("email_outbox").createIndex({ idempotencyKey: 1 }, { unique: true, sparse: true }),
+    db.collection("job_views").createIndex({ jobId: 1, viewedAt: -1 }),
+    db.collection("job_views").createIndex({ recruiterEmail: 1, viewedAt: -1 }),
+    db.collection("job_views").createIndex({ jobId: 1, viewerKey: 1, viewedAt: -1 }),
+    db.collection("audit_logs").createIndex({ timestamp: -1 }),
+    db.collection("audit_logs").createIndex({ action: 1, timestamp: -1 }),
+    db.collection("audit_logs").createIndex({ targetType: 1, targetId: 1 }),
+    db.collection("audit_logs").createIndex({ actorEmail: 1, timestamp: -1 }),
   ]);
 
   // Seed companies

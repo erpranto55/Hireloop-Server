@@ -2,10 +2,15 @@ import { Router } from "express";
 import { getDb, toObjectId } from "../db.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { badRequest, created, notFound } from "../utils/http.js";
-import { requireAuth, requireRole } from "../middleware/auth.js";
+import { requireAuth, requireRole, optionalAuth } from "../middleware/auth.js";
 import { getRecruiterJobLimit } from "../config/plans.js";
+import { recordAuditLog } from "../services/auditService.js";
+import { recordJobViewHandler } from "./analytics.js";
 
 const router = Router();
+
+// POST /api/jobs/:id/view - Public privacy-conscious job view tracking
+router.post("/:id/view", optionalAuth, asyncHandler(recordJobViewHandler));
 
 // GET /api/jobs - Public job browsing
 router.get("/", asyncHandler(async (req, res) => {
@@ -141,6 +146,18 @@ router.patch("/:id", requireAuth, asyncHandler(async (req, res) => {
     { returnDocument: "after" },
   );
 
+  if (isAdmin && updateFields.status && updateFields.status !== existingJob.status) {
+    recordAuditLog({
+      actor: req.user,
+      action: "job_moderated",
+      targetType: "job",
+      targetId: existingJob._id.toString(),
+      targetIdentifier: existingJob.title,
+      before: { status: existingJob.status },
+      after: { status: updateFields.status },
+    });
+  }
+
   res.json(result);
 }));
 
@@ -164,6 +181,23 @@ router.delete("/:id", requireAuth, asyncHandler(async (req, res) => {
 
   const result = await db.collection("jobs").deleteOne({ _id });
   if (!result.deletedCount) return notFound(res, "Job not found");
+
+  if (isAdmin) {
+    recordAuditLog({
+      actor: req.user,
+      action: "job_deleted",
+      targetType: "job",
+      targetId: existingJob._id.toString(),
+      targetIdentifier: existingJob.title,
+      before: {
+        title: existingJob.title,
+        companyName: existingJob.companyName,
+        recruiterEmail: existingJob.recruiterEmail,
+        status: existingJob.status,
+      },
+      after: null,
+    });
+  }
 
   res.status(204).send();
 }));
