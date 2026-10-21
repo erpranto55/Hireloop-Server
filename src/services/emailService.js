@@ -281,6 +281,98 @@ export const emailTemplates = {
       }),
     };
   },
+
+  interviewInvitation({ jobTitle, companyName, scheduledAt, durationMinutes, timezone, format, location, agenda, calendarUrl, viewUrl }) {
+    return {
+      subject: `Interview Invitation: ${jobTitle} at ${companyName}`,
+      html: renderBaseTemplate({
+        title: "Interview Invitation",
+        preheader: `You have been invited to an interview for ${jobTitle}`,
+        bodyHtml: `
+          <p>Hello,</p>
+          <p>You have been invited to an interview for the <strong style="color: #ffffff;">${jobTitle}</strong> position at <strong style="color: #ffffff;">${companyName}</strong>.</p>
+          <div class="meta-box">
+            <div class="meta-row"><span class="meta-label">Position:</span><span class="meta-value">${jobTitle}</span></div>
+            <div class="meta-row"><span class="meta-label">Company:</span><span class="meta-value">${companyName}</span></div>
+            <div class="meta-row"><span class="meta-label">Date & Time:</span><span class="meta-value" style="color: #818cf8;">${scheduledAt} (${timezone || "UTC"})</span></div>
+            <div class="meta-row"><span class="meta-label">Duration:</span><span class="meta-value">${durationMinutes || 45} minutes</span></div>
+            <div class="meta-row"><span class="meta-label">Format:</span><span class="meta-value" style="text-transform: capitalize;">${format || "Video Call"}</span></div>
+            ${location ? `<div class="meta-row"><span class="meta-label">Location / Link:</span><span class="meta-value">${location}</span></div>` : ""}
+            ${agenda ? `<div class="meta-row"><span class="meta-label">Agenda:</span><span class="meta-value">${agenda}</span></div>` : ""}
+          </div>
+          <p>Please review the details in your HireLoop dashboard. You can confirm your attendance or download the calendar invite directly.</p>
+          ${calendarUrl ? `<p><a href="${calendarUrl}" style="color: #818cf8; text-decoration: underline; font-size: 13px;">Add to Google Calendar</a></p>` : ""}
+        `,
+        ctaText: "View & Confirm Interview",
+        ctaUrl: viewUrl || "/dashboard/seeker/applications",
+      }),
+    };
+  },
+
+  interviewRescheduled({ jobTitle, companyName, previousTime, newTime, timezone, format, location, reason, calendarUrl, viewUrl }) {
+    return {
+      subject: `Interview Rescheduled: ${jobTitle} (${newTime})`,
+      html: renderBaseTemplate({
+        title: "Interview Rescheduled",
+        preheader: `New interview time scheduled for ${jobTitle}`,
+        bodyHtml: `
+          <p>Hello,</p>
+          <p>The interview appointment for <strong style="color: #ffffff;">${jobTitle}</strong> at <strong style="color: #ffffff;">${companyName}</strong> has been rescheduled.</p>
+          <div class="meta-box">
+            ${previousTime ? `<div class="meta-row"><span class="meta-label">Previous Time:</span><span class="meta-value" style="text-decoration: line-through; color: #a1a1aa;">${previousTime}</span></div>` : ""}
+            <div class="meta-row"><span class="meta-label">New Date & Time:</span><span class="meta-value" style="color: #34d399; font-weight: 600;">${newTime} (${timezone || "UTC"})</span></div>
+            <div class="meta-row"><span class="meta-label">Format:</span><span class="meta-value" style="text-transform: capitalize;">${format || "Video Call"}</span></div>
+            ${location ? `<div class="meta-row"><span class="meta-label">Location / Link:</span><span class="meta-value">${location}</span></div>` : ""}
+            ${reason ? `<div class="meta-row"><span class="meta-label">Reason / Notes:</span><span class="meta-value">${reason}</span></div>` : ""}
+          </div>
+          <p>Your calendar and appointment details have been updated accordingly.</p>
+          ${calendarUrl ? `<p><a href="${calendarUrl}" style="color: #818cf8; text-decoration: underline; font-size: 13px;">Update Google Calendar</a></p>` : ""}
+        `,
+        ctaText: "View Updated Appointment",
+        ctaUrl: viewUrl || "/dashboard/seeker/applications",
+      }),
+    };
+  },
+
+  interviewCanceled({ jobTitle, companyName, scheduledAt, canceledBy, reason, viewUrl }) {
+    return {
+      subject: `Interview Canceled: ${jobTitle}`,
+      html: renderBaseTemplate({
+        title: "Interview Canceled",
+        preheader: `The interview scheduled for ${jobTitle} has been canceled`,
+        bodyHtml: `
+          <p>Hello,</p>
+          <p>The interview appointment for <strong style="color: #ffffff;">${jobTitle}</strong> at <strong style="color: #ffffff;">${companyName}</strong> originally set for <strong style="color: #ffffff;">${scheduledAt}</strong> has been canceled by ${canceledBy || "the hiring team"}.</p>
+          ${reason ? `<div class="meta-box"><div class="meta-row"><span class="meta-label">Note:</span><span class="meta-value">${reason}</span></div></div>` : ""}
+          <p>If you have any questions or wish to explore next steps, please check your application status in HireLoop.</p>
+        `,
+        ctaText: "View Application Status",
+        ctaUrl: viewUrl || "/dashboard/seeker/applications",
+      }),
+    };
+  },
+
+  interviewStatusUpdated({ jobTitle, companyName, newStatus, scheduledAt, viewUrl }) {
+    return {
+      subject: `Interview Update: ${newStatus} (${jobTitle})`,
+      html: renderBaseTemplate({
+        title: `Interview ${newStatus}`,
+        preheader: `Interview status has been updated to ${newStatus}`,
+        bodyHtml: `
+          <p>Hello,</p>
+          <p>The status of your interview for <strong style="color: #ffffff;">${jobTitle}</strong> at <strong style="color: #ffffff;">${companyName}</strong> has been updated to <strong style="color: #818cf8;">${newStatus}</strong>.</p>
+          <div class="meta-box">
+            <div class="meta-row"><span class="meta-label">Position:</span><span class="meta-value">${jobTitle}</span></div>
+            <div class="meta-row"><span class="meta-label">Appointment Time:</span><span class="meta-value">${scheduledAt}</span></div>
+            <div class="meta-row"><span class="meta-label">Updated Status:</span><span class="meta-value" style="color: #34d399;">${newStatus}</span></div>
+          </div>
+          <p>Visit your dashboard to view complete details.</p>
+        `,
+        ctaText: "View Interview Details",
+        ctaUrl: viewUrl || "/dashboard",
+      }),
+    };
+  },
 };
 
 /**

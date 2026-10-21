@@ -35,6 +35,14 @@ export async function connectToDatabase() {
     db.collection("audit_logs").createIndex({ action: 1, timestamp: -1 }),
     db.collection("audit_logs").createIndex({ targetType: 1, targetId: 1 }),
     db.collection("audit_logs").createIndex({ actorEmail: 1, timestamp: -1 }),
+    db.collection("parsed_resumes").createIndex({ fileId: 1 }, { unique: true }),
+    db.collection("parsed_resumes").createIndex({ seekerEmail: 1 }),
+    db.collection("parsed_resumes").createIndex({ status: 1 }),
+    db.collection("interviews").createIndex({ applicationId: 1, createdAt: -1 }),
+    db.collection("interviews").createIndex({ recruiterEmail: 1, scheduledAt: 1 }),
+    db.collection("interviews").createIndex({ seekerEmail: 1, scheduledAt: 1 }),
+    db.collection("interviews").createIndex({ status: 1 }),
+    db.collection("applications").createIndex({ recruiterEmail: 1, appliedAt: -1 }),
   ]);
 
   // Seed companies

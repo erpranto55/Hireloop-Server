@@ -99,6 +99,41 @@ router.post(
   })
 );
 
+// Shared authorization check for resume streaming and parsed data
+async function isUserAuthorizedForResume(db, fileId, userEmail, userRole) {
+  if (userRole === "admin") return true;
+
+  // 1. Check direct uploader
+  const resumeRecord = await db.collection("resumes").findOne({ fileId });
+  if (resumeRecord && resumeRecord.uploadedBy === userEmail) {
+    return true;
+  }
+
+  // 2. Check seeker applications
+  const seekerApp = await db.collection("applications").findOne({
+    seekerEmail: new RegExp(`^${userEmail}$`, "i"),
+    $or: [
+      { resumeUrl: { $regex: fileId, $options: "i" } },
+      { resumeFileId: fileId },
+    ],
+  });
+  if (seekerApp) return true;
+
+  // 3. Check recruiter applications
+  if (userRole === "recruiter") {
+    const recruiterApp = await db.collection("applications").findOne({
+      recruiterEmail: new RegExp(`^${userEmail}$`, "i"),
+      $or: [
+        { resumeUrl: { $regex: fileId, $options: "i" } },
+        { resumeFileId: fileId },
+      ],
+    });
+    if (recruiterApp) return true;
+  }
+
+  return false;
+}
+
 // GET /api/resumes/:fileId - Authorize and stream resume
 router.get("/:fileId", requireAuth, asyncHandler(async (req, res) => {
   const { fileId } = req.params;
@@ -117,47 +152,7 @@ router.get("/:fileId", requireAuth, asyncHandler(async (req, res) => {
   const userRole = (req.user.role || "").toLowerCase();
   const db = getDb();
 
-  // Check authorization
-  let isAuthorized = false;
-
-  if (userRole === "admin") {
-    isAuthorized = true;
-  } else {
-    // 1. Check if user is the direct uploader
-    const resumeRecord = await db.collection("resumes").findOne({ fileId });
-    if (resumeRecord && resumeRecord.uploadedBy === userEmail) {
-      isAuthorized = true;
-    }
-
-    // 2. Check if user has an application referencing this resume as seeker
-    if (!isAuthorized) {
-      const seekerApp = await db.collection("applications").findOne({
-        seekerEmail: new RegExp(`^${userEmail}$`, "i"),
-        $or: [
-          { resumeUrl: { $regex: fileId, $options: "i" } },
-          { resumeFileId: fileId },
-        ],
-      });
-      if (seekerApp) {
-        isAuthorized = true;
-      }
-    }
-
-    // 3. Check if user is the recruiter who owns the job for an application with this resume
-    if (!isAuthorized && userRole === "recruiter") {
-      const recruiterApp = await db.collection("applications").findOne({
-        recruiterEmail: new RegExp(`^${userEmail}$`, "i"),
-        $or: [
-          { resumeUrl: { $regex: fileId, $options: "i" } },
-          { resumeFileId: fileId },
-        ],
-      });
-      if (recruiterApp) {
-        isAuthorized = true;
-      }
-    }
-  }
-
+  const isAuthorized = await isUserAuthorizedForResume(db, fileId, userEmail, userRole);
   if (!isAuthorized) {
     return res.status(403).json({
       message: "Forbidden: You are not authorized to view this candidate resume.",
@@ -170,6 +165,64 @@ router.get("/:fileId", requireAuth, asyncHandler(async (req, res) => {
 
   const fileStream = fs.createReadStream(filePath);
   fileStream.pipe(res);
+}));
+
+// POST /api/resumes/:fileId/parse - Parse and extract structured data
+router.post("/:fileId/parse", requireAuth, asyncHandler(async (req, res) => {
+  const { fileId } = req.params;
+
+  if (!fileId || !/^[a-zA-Z0-9-]+\.pdf$/.test(fileId)) {
+    return badRequest(res, "Invalid resume identifier");
+  }
+
+  const userEmail = req.user.email.toLowerCase();
+  const userRole = (req.user.role || "").toLowerCase();
+  const db = getDb();
+
+  const isAuthorized = await isUserAuthorizedForResume(db, fileId, userEmail, userRole);
+  if (!isAuthorized) {
+    return res.status(403).json({
+      message: "Forbidden: You are not authorized to parse this resume.",
+    });
+  }
+
+  const { parseAndSaveResume } = await import("../services/resumeParserService.js");
+  const parsedDoc = await parseAndSaveResume(fileId, req.user);
+
+  res.json({
+    message: "Resume parsing completed",
+    parsedResume: parsedDoc,
+  });
+}));
+
+// GET /api/resumes/:fileId/parsed - Retrieve structured parsing results
+router.get("/:fileId/parsed", requireAuth, asyncHandler(async (req, res) => {
+  const { fileId } = req.params;
+
+  if (!fileId || !/^[a-zA-Z0-9-]+\.pdf$/.test(fileId)) {
+    return badRequest(res, "Invalid resume identifier");
+  }
+
+  const userEmail = req.user.email.toLowerCase();
+  const userRole = (req.user.role || "").toLowerCase();
+  const db = getDb();
+
+  const isAuthorized = await isUserAuthorizedForResume(db, fileId, userEmail, userRole);
+  if (!isAuthorized) {
+    return res.status(403).json({
+      message: "Forbidden: You are not authorized to access parsed data for this resume.",
+    });
+  }
+
+  let parsedDoc = await db.collection("parsed_resumes").findOne({ fileId });
+
+  // If not yet parsed, trigger parsing on-demand
+  if (!parsedDoc) {
+    const { parseAndSaveResume } = await import("../services/resumeParserService.js");
+    parsedDoc = await parseAndSaveResume(fileId, req.user);
+  }
+
+  res.json(parsedDoc);
 }));
 
 export default router;
