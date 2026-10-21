@@ -23,6 +23,11 @@ export async function connectToDatabase() {
     db.collection("subscriptions").createIndex({ userEmail: 1 }),
     db.collection("subscriptions").createIndex({ stripeSubscriptionId: 1 }, { sparse: true }),
     db.collection("webhook_events").createIndex({ eventId: 1 }, { unique: true }),
+    db.collection("notifications").createIndex({ recipientEmail: 1, createdAt: -1 }),
+    db.collection("notifications").createIndex({ recipientEmail: 1, read: 1 }),
+    db.collection("notifications").createIndex({ recipientEmail: 1, idempotencyKey: 1 }, { unique: true, sparse: true }),
+    db.collection("email_outbox").createIndex({ status: 1, nextAttemptAt: 1 }),
+    db.collection("email_outbox").createIndex({ idempotencyKey: 1 }, { unique: true, sparse: true }),
   ]);
 
   // Seed companies

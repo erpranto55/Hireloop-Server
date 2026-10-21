@@ -4,6 +4,7 @@ import { asyncHandler } from "../utils/asyncHandler.js";
 import { badRequest, created, notFound } from "../utils/http.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { getSeekerApplicationLimit } from "../config/plans.js";
+import { createNotification } from "../services/notificationService.js";
 
 const router = Router();
 
@@ -213,6 +214,31 @@ router.post("/", requireAuth, requireRole("seeker", "admin"), asyncHandler(async
     await db.collection("jobs").updateOne({ _id: jobObjectId }, { $inc: { applicantsCount: 1 } });
   }
 
+  // Notify recruiter of new application submission
+  if (application.recruiterEmail) {
+    createNotification({
+      recipientEmail: application.recruiterEmail,
+      role: "recruiter",
+      type: "application_received",
+      title: "New Application Received",
+      message: `${application.seekerName} submitted an application for ${application.jobTitle}.`,
+      link: `/dashboard/jobs/${application.jobId}/applicants`,
+      referenceId: result.insertedId.toString(),
+      referenceType: "application",
+      idempotencyKey: `app_create_${result.insertedId}`,
+      sendEmail: true,
+      emailTemplate: "applicationReceived",
+      emailData: {
+        seekerName: application.seekerName,
+        jobTitle: application.jobTitle,
+        companyName: application.companyName,
+        reviewUrl: `/dashboard/jobs/${application.jobId}/applicants`,
+      },
+    }).catch((err) => {
+      console.error("[Applications] Recruiter notification error:", err.message);
+    });
+  }
+
   created(res, { ...application, _id: result.insertedId });
 }));
 
@@ -277,6 +303,31 @@ router.patch("/:id/status", requireAuth, asyncHandler(async (req, res) => {
     },
     { returnDocument: "after" }
   );
+
+  // Notify seeker if status transitioned to a new stage (never leaking private recruiter notes)
+  if (currentStatus.toLowerCase() !== matchedStatus.toLowerCase() && application.seekerEmail) {
+    createNotification({
+      recipientEmail: application.seekerEmail,
+      role: "seeker",
+      type: "application_status_changed",
+      title: `Application Status: ${matchedStatus}`,
+      message: `Your application for ${application.jobTitle} at ${application.companyName} has been updated to "${matchedStatus}".`,
+      link: `/dashboard/seeker/applications`,
+      referenceId: application._id.toString(),
+      referenceType: "application",
+      idempotencyKey: `app_status_${application._id}_${matchedStatus}_${statusHistoryEntry.changedAt.getTime()}`,
+      sendEmail: true,
+      emailTemplate: "applicationStatusChanged",
+      emailData: {
+        jobTitle: application.jobTitle,
+        companyName: application.companyName,
+        newStatus: matchedStatus,
+        viewUrl: `/dashboard/seeker/applications`,
+      },
+    }).catch((err) => {
+      console.error("[Applications] Seeker notification error:", err.message);
+    });
+  }
 
   res.json(result);
 }));

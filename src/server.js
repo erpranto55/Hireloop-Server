@@ -9,6 +9,7 @@ import paymentsRouter from "./routes/payments.js";
 import resumesRouter from "./routes/resumes.js";
 import savedJobsRouter from "./routes/savedJobs.js";
 import usersRouter from "./routes/users.js";
+import notificationsRouter from "./routes/notifications.js";
 
 import { rateLimiter } from "./middleware/rateLimiter.js";
 
@@ -60,6 +61,7 @@ app.use("/api/resumes", resumesRouter);
 app.use("/api/saved-jobs", savedJobsRouter);
 app.use("/api/users", usersRouter);
 app.use("/api/payments", paymentsRouter);
+app.use("/api/notifications", notificationsRouter);
 
 app.use((req, res) => {
   res.status(404).json({ message: `Route ${req.method} ${req.originalUrl} not found` });

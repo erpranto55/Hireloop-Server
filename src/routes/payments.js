@@ -6,6 +6,7 @@ import { getDb } from "../db.js";
 import { requireAuth } from "../middleware/auth.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { badRequest, created, notFound } from "../utils/http.js";
+import { createNotification } from "../services/notificationService.js";
 
 const router = Router();
 
@@ -316,6 +317,25 @@ router.get("/verify-session", requireAuth, asyncHandler(async (req, res) => {
         createdAt: new Date(),
       });
     }
+
+    createNotification({
+      recipientEmail: req.user.email,
+      role: role || req.user.role || "seeker",
+      type: "subscription_activated",
+      title: "Subscription Activated",
+      message: `Your HireLoop subscription to the ${planName} plan is now active.`,
+      link: `/dashboard/${role === "recruiter" ? "recruiter" : "seeker"}/billing`,
+      referenceId: session.id,
+      referenceType: "checkout_session",
+      idempotencyKey: `sub_act_${session.id}`,
+      sendEmail: true,
+      emailTemplate: "subscriptionActivated",
+      emailData: {
+        planName,
+        role: role || req.user.role || "seeker",
+        billingUrl: `/dashboard/${role === "recruiter" ? "recruiter" : "seeker"}/billing`,
+      },
+    }).catch((err) => console.error("[Payments] Verify-session notification error:", err.message));
   }
 
   res.json({
@@ -372,6 +392,31 @@ router.post("/cancel-subscription", requireAuth, asyncHandler(async (req, res) =
     { userEmail: new RegExp(`^${user.email}$`, "i") },
     { $set: { cancelAtPeriodEnd: true, updatedAt: new Date() } }
   );
+
+  const expirationDate = updatedSub.current_period_end
+    ? new Date(updatedSub.current_period_end * 1000).toLocaleDateString()
+    : "end of current billing period";
+
+  createNotification({
+    recipientEmail: user.email,
+    role: user.role || "seeker",
+    type: "subscription_cancellation_scheduled",
+    title: "Subscription Cancellation Scheduled",
+    message: `Your subscription will remain active until ${expirationDate}, after which your account will return to the Free tier.`,
+    link: `/dashboard/${user.role === "recruiter" ? "recruiter" : "seeker"}/billing`,
+    referenceId: user.stripeSubscriptionId,
+    referenceType: "subscription",
+    idempotencyKey: `sub_cancel_${user.stripeSubscriptionId}_${updatedSub.current_period_end}`,
+    sendEmail: true,
+    emailTemplate: "subscriptionCanceled",
+    emailData: {
+      planName: user.plan || "Current Plan",
+      expirationDate,
+      billingUrl: `/dashboard/${user.role === "recruiter" ? "recruiter" : "seeker"}/billing`,
+    },
+  }).catch((err) => {
+    console.error("[Payments] Cancel notification error:", err.message);
+  });
 
   res.json({
     message: "Subscription scheduled to cancel at end of current billing period.",
@@ -459,6 +504,25 @@ router.post("/webhook", asyncHandler(async (req, res) => {
             createdAt: new Date(),
           });
         }
+
+        createNotification({
+          recipientEmail: userEmail,
+          role: role || "seeker",
+          type: "subscription_activated",
+          title: "Subscription Activated",
+          message: `Your HireLoop subscription to the ${planName} plan is now active.`,
+          link: `/dashboard/${role === "recruiter" ? "recruiter" : "seeker"}/billing`,
+          referenceId: session.id,
+          referenceType: "checkout_session",
+          idempotencyKey: `sub_act_${session.id}`,
+          sendEmail: true,
+          emailTemplate: "subscriptionActivated",
+          emailData: {
+            planName,
+            role: role || "seeker",
+            billingUrl: `/dashboard/${role === "recruiter" ? "recruiter" : "seeker"}/billing`,
+          },
+        }).catch((err) => console.error("[Payments] Checkout notification error:", err.message));
       }
       break;
     }
@@ -505,6 +569,25 @@ router.post("/webhook", asyncHandler(async (req, res) => {
           stripeSubscriptionId: subscription.id,
           subscriptionStatus: "canceled",
         });
+
+        createNotification({
+          recipientEmail: user.email,
+          role: user.role || "seeker",
+          type: "subscription_canceled",
+          title: "Subscription Ended",
+          message: `Your subscription has ended. Your account has returned to the Free tier.`,
+          link: `/dashboard/${user.role === "recruiter" ? "recruiter" : "seeker"}/billing`,
+          referenceId: subscription.id,
+          referenceType: "subscription",
+          idempotencyKey: `sub_del_${subscription.id}`,
+          sendEmail: true,
+          emailTemplate: "subscriptionCanceled",
+          emailData: {
+            planName: "Previous Plan",
+            expirationDate: "Immediately",
+            billingUrl: `/dashboard/${user.role === "recruiter" ? "recruiter" : "seeker"}/billing`,
+          },
+        }).catch((err) => console.error("[Payments] Cancel notification error:", err.message));
       }
       break;
     }
@@ -534,6 +617,25 @@ router.post("/webhook", asyncHandler(async (req, res) => {
           { $setOnInsert: paymentRecord },
           { upsert: true }
         );
+
+        createNotification({
+          recipientEmail: user.email,
+          role: user.role || "seeker",
+          type: "payment_succeeded",
+          title: "Payment Confirmed",
+          message: `Your renewal payment of ${paymentRecord.amount} for your ${paymentRecord.plan} plan has been processed successfully.`,
+          link: `/dashboard/${user.role === "recruiter" ? "recruiter" : "seeker"}/billing`,
+          referenceId: invoice.id,
+          referenceType: "invoice",
+          idempotencyKey: `pay_succ_${invoice.id}`,
+          sendEmail: true,
+          emailTemplate: "paymentSucceeded",
+          emailData: {
+            planName: paymentRecord.plan,
+            amount: paymentRecord.amount,
+            billingUrl: `/dashboard/${user.role === "recruiter" ? "recruiter" : "seeker"}/billing`,
+          },
+        }).catch((err) => console.error("[Payments] Invoice notification error:", err.message));
       }
       break;
     }
@@ -548,6 +650,24 @@ router.post("/webhook", asyncHandler(async (req, res) => {
           { userEmail: new RegExp(`^${user.email}$`, "i") },
           { $set: { status: "past_due", updatedAt: new Date() } }
         );
+
+        createNotification({
+          recipientEmail: user.email,
+          role: user.role || "seeker",
+          type: "payment_failed",
+          title: "Payment Failed",
+          message: `Your scheduled renewal payment could not be processed. Please update your payment card to avoid account downgrading.`,
+          link: `/dashboard/${user.role === "recruiter" ? "recruiter" : "seeker"}/billing`,
+          referenceId: invoice.id,
+          referenceType: "invoice",
+          idempotencyKey: `pay_fail_${invoice.id}`,
+          sendEmail: true,
+          emailTemplate: "paymentFailed",
+          emailData: {
+            planName: user.plan || "Current Plan",
+            billingUrl: `/dashboard/${user.role === "recruiter" ? "recruiter" : "seeker"}/billing`,
+          },
+        }).catch((err) => console.error("[Payments] Payment failed notification error:", err.message));
       }
       break;
     }
