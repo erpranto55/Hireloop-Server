@@ -43,6 +43,12 @@ export async function connectToDatabase() {
     db.collection("interviews").createIndex({ seekerEmail: 1, scheduledAt: 1 }),
     db.collection("interviews").createIndex({ status: 1 }),
     db.collection("applications").createIndex({ recruiterEmail: 1, appliedAt: -1 }),
+    db.collection("conversations").createIndex({ applicationId: 1 }, { unique: true }),
+    db.collection("conversations").createIndex({ recruiterEmail: 1, updatedAt: -1 }),
+    db.collection("conversations").createIndex({ seekerEmail: 1, updatedAt: -1 }),
+    db.collection("messages").createIndex({ conversationId: 1, createdAt: 1 }),
+    db.collection("messages").createIndex({ conversationId: 1, readAt: 1 }),
+    db.collection("messages").createIndex({ idempotencyKey: 1 }, { unique: true, sparse: true }),
   ]);
 
   // Seed companies

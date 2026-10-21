@@ -14,6 +14,7 @@ import analyticsRouter from "./routes/analytics.js";
 import auditRouter from "./routes/audit.js";
 import candidatesRouter from "./routes/candidates.js";
 import interviewsRouter from "./routes/interviews.js";
+import messagesRouter from "./routes/messages.js";
 
 import { rateLimiter } from "./middleware/rateLimiter.js";
 
@@ -70,6 +71,7 @@ app.use("/api/analytics", analyticsRouter);
 app.use("/api/admin", auditRouter);
 app.use("/api/candidates", candidatesRouter);
 app.use("/api/interviews", interviewsRouter);
+app.use("/api/messages", messagesRouter);
 
 app.use((req, res) => {
   res.status(404).json({ message: `Route ${req.method} ${req.originalUrl} not found` });

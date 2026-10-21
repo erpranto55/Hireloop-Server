@@ -64,14 +64,14 @@ class SSEHub {
     res.on("error", cleanup);
   }
 
-  sendToUser(email, data) {
+  sendToUser(email, data, eventType = "notification") {
     if (!email) return 0;
     const normalizedEmail = email.toLowerCase().trim();
     const clientSet = this.clients.get(normalizedEmail);
     if (!clientSet || clientSet.size === 0) return 0;
 
     let sent = 0;
-    const payload = `event: notification\ndata: ${JSON.stringify(data)}\n\n`;
+    const payload = `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
 
     for (const res of clientSet) {
       try {

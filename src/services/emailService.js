@@ -373,6 +373,30 @@ export const emailTemplates = {
       }),
     };
   },
+
+  newMessageReceived({ recipientName, senderName, jobTitle, companyName, previewText, messagePreview, viewUrl, conversationUrl }) {
+    const preview = previewText || messagePreview;
+    const targetUrl = viewUrl || conversationUrl || "/dashboard";
+    return {
+      subject: `New message from ${senderName} regarding ${jobTitle}`,
+      html: renderBaseTemplate({
+        title: "New Message Received",
+        preheader: `${senderName} sent you a message on HireLoop`,
+        bodyHtml: `
+          <p>Hello${recipientName ? ` ${recipientName}` : ""},</p>
+          <p><strong style="color: #ffffff;">${senderName}</strong> sent you a message regarding the <strong style="color: #818cf8;">${jobTitle}</strong> position${companyName ? ` at <strong style="color: #ffffff;">${companyName}</strong>` : ""}.</p>
+          <div class="meta-box">
+            <div class="meta-row"><span class="meta-label">From:</span><span class="meta-value">${senderName}</span></div>
+            <div class="meta-row"><span class="meta-label">Position:</span><span class="meta-value">${jobTitle}</span></div>
+            ${preview ? `<div class="meta-row"><span class="meta-label">Message Preview:</span><span class="meta-value" style="color: #d4d4d8; font-style: italic;">&quot;${preview}&quot;</span></div>` : ""}
+          </div>
+          <p>To reply and review the full conversation, open your HireLoop messages inbox.</p>
+        `,
+        ctaText: "Reply to Message",
+        ctaUrl: targetUrl,
+      }),
+    };
+  },
 };
 
 /**
