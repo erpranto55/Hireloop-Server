@@ -56,6 +56,9 @@ export async function connectToDatabase() {
     db.collection("user").createIndex({ lastActiveAt: 1 }),
     db.collection("push_subscriptions").createIndex({ userEmail: 1 }),
     db.collection("push_subscriptions").createIndex({ endpoint: 1 }, { unique: true }),
+    db.collection("unsubscribe_tokens").createIndex({ tokenHash: 1 }, { unique: true }),
+    db.collection("unsubscribe_tokens").createIndex({ userEmail: 1 }),
+    db.collection("unsubscribe_tokens").createIndex({ expiresAt: 1 }),
   ]);
 
   // Seed companies

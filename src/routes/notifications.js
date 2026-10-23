@@ -16,8 +16,87 @@ import {
   savePushSubscription,
   removePushSubscription,
 } from "../services/pushService.js";
+import {
+  getUserPreferences,
+  updateUserPreferences,
+  resetUserPreferences,
+  verifyUnsubscribeToken,
+  applyUnsubscribe,
+} from "../services/preferenceService.js";
 
 const router = Router();
+
+// GET /api/notifications/preferences - Fetch authenticated user's notification preferences
+router.get("/preferences", requireAuth, asyncHandler(async (req, res) => {
+  const result = await getUserPreferences(req.user.email);
+  res.json(result);
+}));
+
+// PATCH /api/notifications/preferences - Update notification preferences
+router.patch("/preferences", requireAuth, asyncHandler(async (req, res) => {
+  try {
+    const updated = await updateUserPreferences(req.user.email, req.body);
+    res.json({ success: true, preferences: updated });
+  } catch (err) {
+    return badRequest(res, err.message);
+  }
+}));
+
+// POST /api/notifications/preferences/reset - Reset preferences to system defaults
+router.post("/preferences/reset", requireAuth, asyncHandler(async (req, res) => {
+  const defaults = await resetUserPreferences(req.user.email);
+  res.json({ success: true, message: "Notification preferences reset to default.", preferences: defaults });
+}));
+
+// GET /api/notifications/unsubscribe/verify - Verify unsubscribe token (read-only, safe for scanners)
+router.get("/unsubscribe/verify", asyncHandler(async (req, res) => {
+  const { token } = req.query;
+  if (!token) {
+    return badRequest(res, "Missing unsubscribe token.");
+  }
+
+  const result = await verifyUnsubscribeToken(token);
+  if (!result.valid) {
+    return badRequest(res, result.error);
+  }
+
+  res.json({
+    valid: true,
+    maskedEmail: result.maskedEmail,
+    scope: result.scope,
+    expiresAt: result.expiresAt,
+  });
+}));
+
+// POST /api/notifications/unsubscribe - Apply unsubscribe action from web interface
+router.post("/unsubscribe", asyncHandler(async (req, res) => {
+  const { token, category } = req.body;
+  if (!token) {
+    return badRequest(res, "Missing unsubscribe token.");
+  }
+
+  try {
+    const result = await applyUnsubscribe(token, category);
+    res.json(result);
+  } catch (err) {
+    return badRequest(res, err.message);
+  }
+}));
+
+// POST /api/notifications/unsubscribe/one-click - RFC 8058 One-Click unsubscribe header handler
+router.post("/unsubscribe/one-click", asyncHandler(async (req, res) => {
+  const token = req.query.token || req.body?.token;
+  if (!token) {
+    return badRequest(res, "Missing unsubscribe token.");
+  }
+
+  try {
+    const result = await applyUnsubscribe(token, "all");
+    res.json({ success: true, message: "Successfully unsubscribed via one-click header.", result });
+  } catch (err) {
+    return badRequest(res, err.message);
+  }
+}));
 
 // GET /api/notifications - List authenticated user's notifications
 router.get("/", requireAuth, asyncHandler(async (req, res) => {

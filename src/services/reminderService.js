@@ -1,34 +1,144 @@
 /**
  * Persistent Interview Reminder Scheduler & Service for HireLoop
- * Schedules, updates, invalidates, and dispatches 24-hour and 1-hour interview reminders
- * with atomic claiming across multiple backend instances.
+ * Schedules, updates, invalidates, and dispatches interview reminders with configurable
+ * lead times (48h, 24h, 12h, 2h, 1h) and atomic claiming across multiple backend instances.
  */
 
 import { getDb, toObjectId } from "../db.js";
 import { createNotification } from "./notificationService.js";
 import { generateGoogleCalendarUrl } from "./calendarService.js";
+import { getUserPreferences, shouldDeliverEmail } from "./preferenceService.js";
 
 const WORKER_ID = `reminder_${process.pid}_${Math.random().toString(36).substring(2, 7)}`;
 const LEASE_TIMEOUT_MS = 5 * 60 * 1000; // 5 min lease before recovering interrupted tasks
-const STALE_THRESHOLD_MS = 15 * 60 * 1000; // Do not send reminder if interview started or passed
 
 export const ELIGIBLE_REMINDER_STATUSES = ["Confirmed", "Rescheduled", "Proposed"];
 
+export const OFFSET_TO_MS = {
+  "48h": 48 * 60 * 60 * 1000,
+  "24h": 24 * 60 * 60 * 1000,
+  "12h": 12 * 60 * 60 * 1000,
+  "2h": 2 * 60 * 60 * 1000,
+  "1h": 1 * 60 * 60 * 1000,
+};
+
+export const OFFSET_LABELS = {
+  "48h": "48 Hours",
+  "24h": "24 Hours",
+  "12h": "12 Hours",
+  "2h": "2 Hours",
+  "1h": "1 Hour",
+};
+
 /**
- * Calculates due dates for 24h and 1h reminders given a scheduledAt timestamp.
+ * Calculates due dates for given reminder lead times relative to a scheduledAt timestamp.
  */
-export function calculateReminderDeadlines(scheduledAt) {
+export function calculateReminderDeadlines(scheduledAt, leadTimes = Object.keys(OFFSET_TO_MS)) {
   const interviewTime = new Date(scheduledAt).getTime();
   if (isNaN(interviewTime)) return null;
 
-  return {
-    "24h": new Date(interviewTime - 24 * 60 * 60 * 1000),
-    "1h": new Date(interviewTime - 1 * 60 * 60 * 1000),
-  };
+  const result = {};
+  for (const lt of leadTimes) {
+    if (OFFSET_TO_MS[lt]) {
+      result[lt] = new Date(interviewTime - OFFSET_TO_MS[lt]);
+    }
+  }
+  return result;
 }
 
 /**
- * Schedules durable 24h and 1h reminders for an interview appointment.
+ * Schedules durable reminders for a specific recipient matching their custom lead time preferences.
+ */
+export async function scheduleInterviewRemindersForRecipient(interview, recipientEmail, leadTimes = ["24h", "1h"]) {
+  if (!interview || !interview.scheduledAt || !recipientEmail) return [];
+
+  let db;
+  try {
+    db = getDb();
+  } catch {
+    return [];
+  }
+
+  const interviewDate = new Date(interview.scheduledAt);
+  const now = new Date();
+  if (interviewDate.getTime() <= now.getTime()) {
+    return [];
+  }
+
+  const interviewId = (interview._id || interview.id || "interview").toString();
+  const scheduleVersion = interviewDate.getTime();
+  const normalizedEmail = recipientEmail.toLowerCase().trim();
+
+  const isSeeker = normalizedEmail === (interview.seekerEmail || "").toLowerCase().trim();
+  const role = isSeeker ? "seeker" : "recruiter";
+  const name = isSeeker ? (interview.seekerName || "Candidate") : (interview.recruiterName || "Recruiter");
+  const otherName = isSeeker
+    ? (interview.companyName || interview.recruiterName || "Recruiter")
+    : (interview.seekerName || "Candidate");
+
+  const deadlines = calculateReminderDeadlines(interviewDate, leadTimes);
+  if (!deadlines) return [];
+
+  const scheduledDocs = [];
+
+  for (const offset of leadTimes) {
+    const dueAt = deadlines[offset];
+    if (!dueAt) continue;
+
+    // Only schedule if dueAt is in the future (or within a 5-min grace window if appointment created recently)
+    if (dueAt.getTime() <= now.getTime() - 5 * 60 * 1000) {
+      continue;
+    }
+
+    const idempotencyKey = `reminder_${interviewId}_${offset}_${normalizedEmail}_${scheduleVersion}`;
+
+    const reminderDoc = {
+      interviewId,
+      applicationId: interview.applicationId,
+      jobId: interview.jobId,
+      jobTitle: interview.jobTitle,
+      companyName: interview.companyName,
+      recipientEmail: normalizedEmail,
+      recipientRole: role,
+      recipientName: name,
+      otherPartyName: otherName,
+      offset, // e.g. "48h", "24h", "12h", "2h", "1h"
+      scheduledInterviewAt: interviewDate,
+      scheduleVersion,
+      timezone: interview.timezone || "UTC",
+      format: interview.format || "video",
+      location: interview.location || "",
+      dueAt,
+      status: "pending", // "pending" | "processing" | "completed" | "canceled" | "superseded" | "skipped" | "failed"
+      attempts: 0,
+      lockedAt: null,
+      lockedBy: null,
+      completedAt: null,
+      idempotencyKey,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    try {
+      await db.collection("scheduled_reminders").updateOne(
+        { idempotencyKey },
+        { $setOnInsert: reminderDoc },
+        { upsert: true }
+      );
+      scheduledDocs.push(reminderDoc);
+    } catch (err) {
+      if (err.code !== 11000) {
+        console.error(`[ReminderService] Error scheduling reminder for ${idempotencyKey}:`, err.message);
+      }
+    }
+  }
+
+  return scheduledDocs;
+}
+
+/**
+ * Schedules durable reminders for all participants in an interview appointment,
+ * respecting each participant's customized notification preferences.
  */
 export async function scheduleInterviewReminders(interview) {
   if (!interview || !interview.scheduledAt) return [];
@@ -46,88 +156,26 @@ export async function scheduleInterviewReminders(interview) {
     return [];
   }
 
-  let db;
-  try {
-    db = getDb();
-  } catch {
-    return [];
-  }
-
-  const interviewId = (interview._id || interview.id || "interview").toString();
-
-  const deadlines = calculateReminderDeadlines(interviewDate);
-  if (!deadlines) return [];
-
-  // Version identifier based on scheduled timestamp to distinguish reschedules
-  const scheduleVersion = interviewDate.getTime();
-
   const recipients = [
-    {
-      email: interview.seekerEmail,
-      role: "seeker",
-      name: interview.seekerName || "Candidate",
-      otherName: interview.companyName || interview.recruiterName || "Recruiter",
-    },
-    {
-      email: interview.recruiterEmail,
-      role: "recruiter",
-      name: interview.recruiterName || "Recruiter",
-      otherName: interview.seekerName || "Candidate",
-    },
-  ].filter((r) => Boolean(r.email));
+    interview.seekerEmail,
+    interview.recruiterEmail,
+  ].filter(Boolean);
 
   const scheduledDocs = [];
 
-  for (const offset of ["24h", "1h"]) {
-    const dueAt = deadlines[offset];
-
-    // Only schedule if dueAt is in the future (or within a 5-min grace window if appointment created recently)
-    if (dueAt.getTime() <= now.getTime() - 5 * 60 * 1000) {
-      continue;
-    }
-
-    for (const recipient of recipients) {
-      const idempotencyKey = `reminder_${interviewId}_${offset}_${recipient.email.toLowerCase()}_${scheduleVersion}`;
-
-      const reminderDoc = {
-        interviewId,
-        applicationId: interview.applicationId,
-        jobId: interview.jobId,
-        jobTitle: interview.jobTitle,
-        companyName: interview.companyName,
-        recipientEmail: recipient.email.toLowerCase().trim(),
-        recipientRole: recipient.role,
-        recipientName: recipient.name,
-        otherPartyName: recipient.otherName,
-        offset, // "24h" | "1h"
-        scheduledInterviewAt: interviewDate,
-        scheduleVersion,
-        timezone: interview.timezone || "UTC",
-        format: interview.format || "video",
-        location: interview.location || "",
-        dueAt,
-        status: "pending", // "pending" | "processing" | "completed" | "canceled" | "superseded" | "skipped" | "failed"
-        attempts: 0,
-        lockedAt: null,
-        lockedBy: null,
-        completedAt: null,
-        idempotencyKey,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
-
-      try {
-        await db.collection("scheduled_reminders").updateOne(
-          { idempotencyKey },
-          { $setOnInsert: reminderDoc },
-          { upsert: true }
-        );
-        scheduledDocs.push(reminderDoc);
-      } catch (err) {
-        if (err.code !== 11000) {
-          console.error(`[ReminderService] Error scheduling reminder for ${idempotencyKey}:`, err.message);
-        }
+  for (const email of recipients) {
+    try {
+      const { preferences } = await getUserPreferences(email);
+      if (preferences.reminders.interviewReminders === false) {
+        continue; // User opted out of interview reminders
       }
+      const leadTimes = preferences.reminders.reminderLeadTimes || ["24h", "1h"];
+      const docs = await scheduleInterviewRemindersForRecipient(interview, email, leadTimes);
+      scheduledDocs.push(...docs);
+    } catch {
+      // Fallback to default lead times
+      const docs = await scheduleInterviewRemindersForRecipient(interview, email, ["24h", "1h"]);
+      scheduledDocs.push(...docs);
     }
   }
 
@@ -135,13 +183,77 @@ export async function scheduleInterviewReminders(interview) {
 }
 
 /**
+ * Reconciles future interview reminders when a user updates their reminder lead times or toggle.
+ * Supersedes obsolete pending reminders and schedules new ones matching updated preferences.
+ */
+export async function reconcileUserReminderPreferences(userEmail) {
+  if (!userEmail) return 0;
+  const normalizedEmail = userEmail.toLowerCase().trim();
+
+  let db;
+  try {
+    db = getDb();
+  } catch {
+    return 0;
+  }
+
+  const { preferences } = await getUserPreferences(normalizedEmail);
+  const now = new Date();
+
+  // Find all future active interviews where user is a participant
+  const futureInterviews = await db.collection("interviews").find({
+    $or: [{ seekerEmail: normalizedEmail }, { recruiterEmail: normalizedEmail }],
+    scheduledAt: { $gt: now },
+    status: { $in: ["Confirmed", "Rescheduled", "Proposed"] },
+  }).toArray();
+
+  if (!futureInterviews.length) return 0;
+
+  let reconciledCount = 0;
+
+  for (const interview of futureInterviews) {
+    const interviewId = (interview._id || interview.id).toString();
+
+    // 1. Invalidate existing pending reminders for this user
+    await db.collection("scheduled_reminders").updateMany(
+      {
+        interviewId,
+        recipientEmail: normalizedEmail,
+        status: { $in: ["pending", "processing"] },
+      },
+      {
+        $set: {
+          status: "superseded",
+          invalidationReason: "preference_updated",
+          updatedAt: now,
+        },
+      }
+    );
+
+    // 2. If reminders are enabled, schedule new ones matching the updated lead times
+    if (preferences.reminders.interviewReminders !== false) {
+      const leadTimes = preferences.reminders.reminderLeadTimes || ["24h", "1h"];
+      await scheduleInterviewRemindersForRecipient(interview, normalizedEmail, leadTimes);
+      reconciledCount++;
+    }
+  }
+
+  return reconciledCount;
+}
+
+/**
  * Invalidates (cancels or supersedes) all pending reminders for a given interview.
  */
 export async function invalidateInterviewReminders(interviewId, reason = "canceled") {
   if (!interviewId) return 0;
-  const db = getDb();
-  const idStr = interviewId.toString();
+  let db;
+  try {
+    db = getDb();
+  } catch {
+    return 0;
+  }
 
+  const idStr = interviewId.toString();
   const targetStatus = reason === "rescheduled" ? "superseded" : "canceled";
 
   const result = await db.collection("scheduled_reminders").updateMany(
@@ -176,7 +288,6 @@ export async function processDueReminders(limit = 10) {
   let processedCount = 0;
 
   for (let i = 0; i < limit; i++) {
-    // Atomic lease acquisition: find a pending due reminder or a timed-out processing reminder
     const claimFilter = {
       $or: [
         {
@@ -204,7 +315,7 @@ export async function processDueReminders(limit = 10) {
     );
 
     if (!reminder) {
-      break; // No more due reminders in this batch
+      break;
     }
 
     try {
@@ -215,7 +326,6 @@ export async function processDueReminders(limit = 10) {
         : null;
 
       // Ineligibility checks:
-      // 1. Interview deleted, canceled, or completed
       if (!currentInterview || ["Canceled", "Completed"].includes(currentInterview.status)) {
         await db.collection("scheduled_reminders").updateOne(
           { _id: reminder._id },
@@ -224,7 +334,7 @@ export async function processDueReminders(limit = 10) {
         continue;
       }
 
-      // 2. Interview rescheduled (version mismatch)
+      // Interview rescheduled (version mismatch)
       const currentVersion = new Date(currentInterview.scheduledAt).getTime();
       if (currentVersion !== reminder.scheduleVersion) {
         await db.collection("scheduled_reminders").updateOne(
@@ -234,7 +344,7 @@ export async function processDueReminders(limit = 10) {
         continue;
       }
 
-      // 3. Staleness check: If interview start time has already passed or started
+      // Staleness check: If interview start time has already passed or started
       if (now.getTime() >= currentVersion) {
         await db.collection("scheduled_reminders").updateOne(
           { _id: reminder._id },
@@ -253,12 +363,17 @@ export async function processDueReminders(limit = 10) {
         endDate: new Date(interviewEnd),
       });
 
-      const templateType = reminder.offset === "24h" ? "interviewReminder24h" : "interviewReminder1h";
+      const templateType = reminder.offset === "24h"
+        ? "interviewReminder24h"
+        : (reminder.offset === "1h" ? "interviewReminder1h" : "interviewReminder24h");
+
       const scheduledAtStr = new Date(currentVersion).toLocaleString("en-US", {
         timeZone: reminder.timezone || "UTC",
         dateStyle: "medium",
         timeStyle: "short",
       });
+
+      const label = OFFSET_LABELS[reminder.offset] || `${reminder.offset}`;
 
       const templateData = {
         recipientName: reminder.recipientName,
@@ -274,15 +389,13 @@ export async function processDueReminders(limit = 10) {
         viewUrl: `/dashboard/${reminder.recipientRole === "recruiter" ? "recruiter" : "seeker/applications"}`,
       };
 
-      const title = reminder.offset === "24h"
-        ? `Interview Reminder (Tomorrow): ${reminder.jobTitle}`
-        : `Interview Starting in 1 Hour: ${reminder.jobTitle}`;
+      const title = `Interview Reminder (${label}): ${reminder.jobTitle}`;
+      const message = `Your interview for "${reminder.jobTitle}" is scheduled in approximately ${label} at ${scheduledAtStr} (${reminder.timezone}).`;
 
-      const message = reminder.offset === "24h"
-        ? `Your interview for "${reminder.jobTitle}" is scheduled tomorrow at ${scheduledAtStr} (${reminder.timezone}).`
-        : `Your interview for "${reminder.jobTitle}" is starting in approximately 1 hour at ${scheduledAtStr} (${reminder.timezone}).`;
+      // Check current email delivery preferences at send time
+      const emailCheck = await shouldDeliverEmail(reminder.recipientEmail, templateType);
 
-      // Dispatch In-App Notification and queue Transactional Email
+      // Dispatch In-App Notification (and transactional email if allowed by user preferences)
       await createNotification({
         recipientEmail: reminder.recipientEmail,
         role: reminder.recipientRole,
@@ -293,7 +406,7 @@ export async function processDueReminders(limit = 10) {
         referenceId: reminder.interviewId,
         referenceType: "interview",
         idempotencyKey: `notif_${reminder.idempotencyKey}`,
-        sendEmail: true,
+        sendEmail: emailCheck.deliver,
         emailTemplate: templateType,
         emailData: templateData,
       });

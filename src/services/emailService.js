@@ -5,6 +5,11 @@
 
 import { config } from "../config.js";
 import { getDb } from "../db.js";
+import {
+  shouldDeliverEmail,
+  generateUnsubscribeToken,
+  ESSENTIAL_TEMPLATES,
+} from "./preferenceService.js";
 
 /**
  * Base email layout wrapper with HireLoop modern dark/indigo aesthetic.
@@ -142,6 +147,7 @@ function renderBaseTemplate({ title, preheader, bodyHtml, ctaText, ctaUrl }) {
     </div>
     <div class="footer">
       This is an automated transactional message regarding your HireLoop account.
+      <!-- UNSUBSCRIBE_SLOT -->
       <br>
       © ${new Date().getFullYear()} HireLoop Platform. All rights reserved.
     </div>
@@ -488,22 +494,27 @@ export const emailTemplates = {
  * Sends an email using the configured external provider (Resend or SMTP)
  * or records as simulated in dev/test environment without external credentials.
  */
-async function sendViaProvider({ to, subject, html, text }) {
+async function sendViaProvider({ to, subject, html, text, headers }) {
   // 1. Resend API integration (if RESEND_API_KEY is configured)
   if (config.resendApiKey && config.resendApiKey !== "re_placeholder_key") {
+    const payload = {
+      from: config.emailFrom,
+      to: [to],
+      subject,
+      html,
+      text: text || subject,
+    };
+    if (headers && Object.keys(headers).length > 0) {
+      payload.headers = headers;
+    }
+
     const response = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${config.resendApiKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        from: config.emailFrom,
-        to: [to],
-        subject,
-        html,
-        text: text || subject,
-      }),
+      body: JSON.stringify(payload),
     });
 
     if (!response.ok) {
@@ -525,7 +536,7 @@ async function sendViaProvider({ to, subject, html, text }) {
 
 /**
  * Queues and immediately attempts reliable delivery of a transactional email
- * via the MongoDB email_outbox pattern.
+ * via the MongoDB email_outbox pattern with preference suppression check.
  */
 export async function queueTransactionalEmail({
   to,
@@ -542,7 +553,6 @@ export async function queueTransactionalEmail({
     return null;
   }
 
-  const { subject, html } = templateFn(templateData);
   const db = getDb();
 
   // Deduplication check via idempotency key
@@ -553,13 +563,76 @@ export async function queueTransactionalEmail({
     }
   }
 
+  const isEssential = ESSENTIAL_TEMPLATES.has(type);
+  let rawUnsubToken = null;
+  let unsubscribeUrl = null;
+
+  if (!isEssential) {
+    try {
+      rawUnsubToken = await generateUnsubscribeToken(normalizedTo, type);
+      if (rawUnsubToken) {
+        const clientUrl = config.clientOrigin || "http://localhost:3000";
+        unsubscribeUrl = `${clientUrl}/unsubscribe?token=${rawUnsubToken}`;
+      }
+    } catch {
+      // Continue safely if token generation fails
+    }
+  }
+
+  const enrichedData = {
+    ...templateData,
+    unsubscribeUrl,
+    canUnsubscribe: !isEssential,
+  };
+
+  const { subject, html: rawHtml } = templateFn(enrichedData);
+
+  // Inject unsubscribe link into HTML footer if slot is present
+  const unsubHtml = !isEssential && unsubscribeUrl
+    ? `<br><a href="${unsubscribeUrl}" style="color: #a1a1aa; text-decoration: underline;">Unsubscribe or update notification preferences</a>`
+    : "";
+  const html = rawHtml ? rawHtml.replace("<!-- UNSUBSCRIBE_SLOT -->", unsubHtml) : rawHtml;
+
+  // Pre-queue preference check
+  const preferenceCheck = await shouldDeliverEmail(normalizedTo, type);
+  if (!preferenceCheck.deliver) {
+    const suppressedDoc = {
+      to: normalizedTo,
+      type,
+      subject,
+      html,
+      unsubscribeToken: rawUnsubToken,
+      idempotencyKey: idempotencyKey || null,
+      status: "suppressed", // Accurately marked as suppressed
+      attempts: 0,
+      maxAttempts: 3,
+      lastError: `Suppressed at queue time by user preference (${preferenceCheck.reason})`,
+      provider: null,
+      messageId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    try {
+      const insertResult = await db.collection("email_outbox").insertOne(suppressedDoc);
+      suppressedDoc._id = insertResult.insertedId;
+    } catch (err) {
+      if (err.code === 11000) {
+        return await db.collection("email_outbox").findOne({ idempotencyKey });
+      }
+      throw err;
+    }
+    return suppressedDoc;
+  }
+
   const outboxDoc = {
     to: normalizedTo,
     type,
     subject,
     html,
+    unsubscribeToken: rawUnsubToken,
     idempotencyKey: idempotencyKey || null,
-    status: "pending", // "pending" | "sent" | "failed"
+    status: "pending", // "pending" | "sent" | "failed" | "suppressed"
     attempts: 0,
     maxAttempts: 3,
     lastError: null,
@@ -574,7 +647,6 @@ export async function queueTransactionalEmail({
     outboxDoc._id = insertResult.insertedId;
   } catch (err) {
     if (err.code === 11000) {
-      // Duplicate idempotencyKey
       return await db.collection("email_outbox").findOne({ idempotencyKey });
     }
     throw err;
@@ -589,18 +661,43 @@ export async function queueTransactionalEmail({
 }
 
 /**
- * Delivers a single outbox record with retry and state tracking.
+ * Delivers a single outbox record with retry, re-checking preferences right before sending.
  */
 export async function deliverOutboxItem(outboxId) {
   const db = getDb();
   const item = await db.collection("email_outbox").findOne({ _id: outboxId });
-  if (!item || item.status === "sent") return item;
+  if (!item || item.status === "sent" || item.status === "suppressed") return item;
+
+  // Re-check preference right before provider delivery (prevent stale send if preference changed while queued)
+  const preferenceCheck = await shouldDeliverEmail(item.to, item.type);
+  if (!preferenceCheck.deliver) {
+    await db.collection("email_outbox").updateOne(
+      { _id: item._id },
+      {
+        $set: {
+          status: "suppressed",
+          lastError: `Suppressed before delivery by user preference (${preferenceCheck.reason})`,
+          updatedAt: new Date(),
+        },
+      }
+    );
+    return { ...item, status: "suppressed", lastError: `Suppressed: ${preferenceCheck.reason}` };
+  }
+
+  // Build RFC 8058 one-click unsubscribe headers if token exists
+  const headers = {};
+  if (item.unsubscribeToken) {
+    const serverUrl = config.serverOrigin || `http://localhost:${config.port || 5001}`;
+    headers["List-Unsubscribe"] = `<${serverUrl}/api/notifications/unsubscribe/one-click?token=${item.unsubscribeToken}>`;
+    headers["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click";
+  }
 
   try {
     const result = await sendViaProvider({
       to: item.to,
       subject: item.subject,
       html: item.html,
+      headers,
     });
 
     await db.collection("email_outbox").updateOne(

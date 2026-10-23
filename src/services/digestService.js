@@ -7,6 +7,7 @@
 import { getDb, toObjectId } from "../db.js";
 import { isUserOfflineForDuration } from "./presenceService.js";
 import { createNotification } from "./notificationService.js";
+import { getUserPreferences, shouldDeliverEmail } from "./preferenceService.js";
 
 const DIGEST_COOLDOWN_MS = 4 * 60 * 60 * 1000; // Minimum 4 hours between digests for the same user
 const OFFLINE_THRESHOLD_MS = 2 * 60 * 60 * 1000; // 2 hours offline threshold
@@ -101,6 +102,23 @@ export async function processOfflineDigests() {
       continue;
     }
 
+    // Check user's notification preferences
+    const { preferences } = await getUserPreferences(recipientEmail);
+
+    // If offline digests are disabled completely by preference, skip
+    if (preferences?.messaging?.offlineDigest === false) {
+      continue;
+    }
+
+    // Determine custom cooldown based on preference frequency:
+    // "every_4h": 4 hours, "every_12h": 12 hours, "daily": 24 hours
+    let userCooldownMs = DIGEST_COOLDOWN_MS;
+    if (preferences?.messaging?.digestFrequency === "every_12h") {
+      userCooldownMs = 12 * 60 * 60 * 1000;
+    } else if (preferences?.messaging?.digestFrequency === "daily") {
+      userCooldownMs = 24 * 60 * 60 * 1000;
+    }
+
     // Check user account status and digest cooldown in MongoDB
     const user = await db.collection("user").findOne(
       { email: recipientEmail },
@@ -114,7 +132,7 @@ export async function processOfflineDigests() {
     // Check cooldown: do not send another digest if one was sent recently
     if (user.lastMessageDigestAt) {
       const elapsedSinceDigest = now.getTime() - new Date(user.lastMessageDigestAt).getTime();
-      if (elapsedSinceDigest < DIGEST_COOLDOWN_MS) {
+      if (elapsedSinceDigest < userCooldownMs) {
         continue;
       }
 
@@ -136,7 +154,7 @@ export async function processOfflineDigests() {
         email: recipientEmail,
         $or: [
           { lastMessageDigestAt: null },
-          { lastMessageDigestAt: { $lte: new Date(now.getTime() - DIGEST_COOLDOWN_MS) } },
+          { lastMessageDigestAt: { $lte: new Date(now.getTime() - userCooldownMs) } },
         ],
       },
       {
@@ -161,8 +179,11 @@ export async function processOfflineDigests() {
 
     const digestBatchId = `digest_${recipientEmail}_${now.getTime()}`;
 
+    // Re-check email delivery preference for offline message digests
+    const emailCheck = await shouldDeliverEmail(recipientEmail, "offlineMessageDigest");
+
     try {
-      // 1. In-App Notification
+      // 1. In-App Notification (and transactional email if allowed by user preferences)
       await createNotification({
         recipientEmail,
         role: group.role,
@@ -173,7 +194,7 @@ export async function processOfflineDigests() {
         referenceId: [...group.convIds][0] || "",
         referenceType: "conversation",
         idempotencyKey: `notif_${digestBatchId}`,
-        sendEmail: true,
+        sendEmail: emailCheck.deliver,
         emailTemplate: "offlineMessageDigest",
         emailData: {
           recipientName: user.name || (group.role === "recruiter" ? "Recruiter" : "Candidate"),
