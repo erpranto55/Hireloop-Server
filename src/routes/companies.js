@@ -36,59 +36,6 @@ router.get("/", optionalAuth, asyncHandler(async (req, res) => {
   res.json(companies);
 }));
 
-// GET /api/companies/admin/queue - Administrator verification queue with metrics
-router.get("/admin/queue", requireAuth, requireRole("admin"), asyncHandler(async (req, res) => {
-  const { status = "all", industry, q, page = 1, limit = 20 } = req.query;
-  const db = getDb();
-  const pageNum = Math.max(1, Number(page) || 1);
-  const pageLimit = Math.min(100, Math.max(1, Number(limit) || 20));
-  const skip = (pageNum - 1) * pageLimit;
-
-  const filter = {};
-  if (status && status !== "all") {
-    filter.status = status;
-  }
-  if (industry) {
-    filter.industry = industry;
-  }
-  if (q) {
-    const searchRegex = new RegExp(q.trim(), "i");
-    filter.$or = [
-      { name: searchRegex },
-      { location: searchRegex },
-      { industry: searchRegex },
-      { recruiterEmail: searchRegex },
-    ];
-  }
-
-  const [companies, total, pendingCount, approvedCount, rejectedCount] = await Promise.all([
-    db.collection("companies")
-      .find(filter)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(pageLimit)
-      .toArray(),
-    db.collection("companies").countDocuments(filter),
-    db.collection("companies").countDocuments({ status: "pending" }),
-    db.collection("companies").countDocuments({ status: "approved" }),
-    db.collection("companies").countDocuments({ status: "rejected" }),
-  ]);
-
-  res.json({
-    companies,
-    total,
-    page: pageNum,
-    limit: pageLimit,
-    totalPages: Math.ceil(total / pageLimit) || 1,
-    counts: {
-      pending: pendingCount,
-      approved: approvedCount,
-      rejected: rejectedCount,
-      all: pendingCount + approvedCount + rejectedCount,
-    },
-  });
-}));
-
 // GET /api/companies/:id - Public company profile
 router.get("/:id", asyncHandler(async (req, res) => {
   const _id = toObjectId(req.params.id);
@@ -143,33 +90,11 @@ router.patch("/:id", requireAuth, asyncHandler(async (req, res) => {
   const updateFields = { ...req.body };
   delete updateFields._id;
 
-  // Company moderation status checks
-  if (updateFields.status !== undefined) {
-    if (!isAdmin) {
-      return res.status(403).json({
-        message: "Forbidden: Only platform administrators can update company verification status.",
-      });
-    }
-
-    // Rule: Recruiters cannot approve their own company submissions
-    if (isOwner) {
-      return res.status(403).json({
-        message: "Forbidden: Administrators cannot moderate or approve their own registered company.",
-      });
-    }
-
-    const allowedStatuses = ["pending", "approved", "rejected"];
-    if (!allowedStatuses.includes(updateFields.status)) {
-      return badRequest(res, `Invalid status. Allowed statuses: ${allowedStatuses.join(", ")}`);
-    }
-
-    // Require rejection reason if status is being set to rejected
-    if (updateFields.status === "rejected" && !updateFields.rejectionReason) {
-      return badRequest(res, "A rejection reason is required when rejecting company verification.");
-    }
-
-    updateFields.verifiedAt = new Date();
-    updateFields.verifiedBy = req.user.email;
+  // Only admin can change company moderation status
+  if (updateFields.status !== undefined && !isAdmin) {
+    return res.status(403).json({
+      message: "Forbidden: Only platform administrators can update company verification status.",
+    });
   }
 
   // Non-admins cannot transfer company ownership
@@ -193,10 +118,7 @@ router.patch("/:id", requireAuth, asyncHandler(async (req, res) => {
       targetId: existingCompany._id.toString(),
       targetIdentifier: existingCompany.name,
       before: { status: existingCompany.status },
-      after: {
-        status: updateFields.status,
-        rejectionReason: updateFields.rejectionReason || null,
-      },
+      after: { status: updateFields.status },
     });
   }
 
