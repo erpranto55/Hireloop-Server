@@ -397,6 +397,91 @@ export const emailTemplates = {
       }),
     };
   },
+
+  interviewReminder24h({ recipientName, recipientRole, otherPartyName, jobTitle, companyName, scheduledAt, timezone, format, location, calendarUrl, viewUrl }) {
+    const isRecruiter = recipientRole === "recruiter";
+    const subject = isRecruiter
+      ? `Reminder: Candidate Interview with ${otherPartyName || "Candidate"} tomorrow`
+      : `Reminder: Interview for ${jobTitle} at ${companyName} tomorrow`;
+
+    return {
+      subject,
+      html: renderBaseTemplate({
+        title: "Interview Reminder (24 Hours)",
+        preheader: `Your interview for ${jobTitle} is scheduled for tomorrow at ${scheduledAt}`,
+        bodyHtml: `
+          <p>Hello${recipientName ? ` ${recipientName}` : ""},</p>
+          <p>This is a scheduled reminder that your interview for <strong style="color: #ffffff;">${jobTitle}</strong>${companyName ? ` with <strong style="color: #ffffff;">${companyName}</strong>` : ""} is scheduled in approximately 24 hours.</p>
+          <div class="meta-box">
+            <div class="meta-row"><span class="meta-label">Position:</span><span class="meta-value">${jobTitle}</span></div>
+            ${companyName ? `<div class="meta-row"><span class="meta-label">Company:</span><span class="meta-value">${companyName}</span></div>` : ""}
+            ${otherPartyName ? `<div class="meta-row"><span class="meta-label">${isRecruiter ? "Candidate" : "Interviewer"}:</span><span class="meta-value">${otherPartyName}</span></div>` : ""}
+            <div class="meta-row"><span class="meta-label">Date & Time:</span><span class="meta-value" style="color: #818cf8;">${scheduledAt} (${timezone || "UTC"})</span></div>
+            <div class="meta-row"><span class="meta-label">Format:</span><span class="meta-value" style="text-transform: capitalize;">${format || "Video"}</span></div>
+            ${location ? `<div class="meta-row"><span class="meta-label">Location / Link:</span><span class="meta-value">${location}</span></div>` : ""}
+          </div>
+          <p>Please ensure your setup is ready ahead of time. You can view all appointment instructions directly in HireLoop.</p>
+          ${calendarUrl ? `<p><a href="${calendarUrl}" style="color: #818cf8; text-decoration: underline; font-size: 13px;">Add to Google Calendar</a></p>` : ""}
+        `,
+        ctaText: "View Appointment Details",
+        ctaUrl: viewUrl || "/dashboard",
+      }),
+    };
+  },
+
+  interviewReminder1h({ recipientName, recipientRole, otherPartyName, jobTitle, companyName, scheduledAt, timezone, format, location, viewUrl }) {
+    const isRecruiter = recipientRole === "recruiter";
+    const subject = isRecruiter
+      ? `Upcoming Interview in 1 Hour: ${otherPartyName || "Candidate"} (${jobTitle})`
+      : `Upcoming Interview in 1 Hour: ${jobTitle} at ${companyName}`;
+
+    return {
+      subject,
+      html: renderBaseTemplate({
+        title: "Interview Starting in 1 Hour",
+        preheader: `Your interview for ${jobTitle} begins at ${scheduledAt}`,
+        bodyHtml: `
+          <p>Hello${recipientName ? ` ${recipientName}` : ""},</p>
+          <p>Your interview appointment for <strong style="color: #ffffff;">${jobTitle}</strong> is starting in approximately <strong style="color: #818cf8;">1 hour</strong>.</p>
+          <div class="meta-box">
+            <div class="meta-row"><span class="meta-label">Scheduled Time:</span><span class="meta-value" style="color: #818cf8; font-weight: 600;">${scheduledAt} (${timezone || "UTC"})</span></div>
+            <div class="meta-row"><span class="meta-label">Format:</span><span class="meta-value" style="text-transform: capitalize;">${format || "Video"}</span></div>
+            ${location ? `<div class="meta-row"><span class="meta-label">Meeting Room / Location:</span><span class="meta-value">${location}</span></div>` : ""}
+            ${otherPartyName ? `<div class="meta-row"><span class="meta-label">${isRecruiter ? "Candidate" : "Interviewer"}:</span><span class="meta-value">${otherPartyName}</span></div>` : ""}
+          </div>
+          <p>Please join on time. Access your meeting link and details below.</p>
+        `,
+        ctaText: "Open Interview Details",
+        ctaUrl: viewUrl || "/dashboard",
+      }),
+    };
+  },
+
+  offlineMessageDigest({ recipientName, unreadCount, senders = [], jobTitles = [], inboxUrl }) {
+    const count = Number(unreadCount) || 1;
+    const sendersList = senders.length > 0 ? senders.slice(0, 3).join(", ") : "hiring team members";
+    const jobsList = jobTitles.length > 0 ? jobTitles.slice(0, 3).join(", ") : "your applications";
+
+    return {
+      subject: `You have ${count} unread message${count > 1 ? "s" : ""} on HireLoop`,
+      html: renderBaseTemplate({
+        title: "Unread Messages Digest",
+        preheader: `You have ${count} unread message${count > 1 ? "s" : ""} from ${sendersList}`,
+        bodyHtml: `
+          <p>Hello${recipientName ? ` ${recipientName}` : ""},</p>
+          <p>You have <strong style="color: #818cf8;">${count} unread message${count > 1 ? "s" : ""}</strong> waiting for you on HireLoop from <strong style="color: #ffffff;">${sendersList}</strong> regarding <strong style="color: #ffffff;">${jobsList}</strong>.</p>
+          <div class="meta-box">
+            <div class="meta-row"><span class="meta-label">Unread Messages:</span><span class="meta-value" style="color: #818cf8; font-weight: 600;">${count}</span></div>
+            <div class="meta-row"><span class="meta-label">Recent Activity:</span><span class="meta-value">${sendersList}</span></div>
+            <div class="meta-row"><span class="meta-label">Topics:</span><span class="meta-value">${jobsList}</span></div>
+          </div>
+          <p style="font-size: 13px; color: #a1a1aa;">To protect candidate privacy and conversation security, full message transcripts are available inside your authenticated messaging workspace.</p>
+        `,
+        ctaText: "Open Messaging Inbox",
+        ctaUrl: inboxUrl || "/dashboard",
+      }),
+    };
+  },
 };
 
 /**

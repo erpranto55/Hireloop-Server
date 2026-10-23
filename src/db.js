@@ -49,6 +49,13 @@ export async function connectToDatabase() {
     db.collection("messages").createIndex({ conversationId: 1, createdAt: 1 }),
     db.collection("messages").createIndex({ conversationId: 1, readAt: 1 }),
     db.collection("messages").createIndex({ idempotencyKey: 1 }, { unique: true, sparse: true }),
+    db.collection("scheduled_reminders").createIndex({ status: 1, dueAt: 1 }),
+    db.collection("scheduled_reminders").createIndex({ interviewId: 1, status: 1 }),
+    db.collection("scheduled_reminders").createIndex({ idempotencyKey: 1 }, { unique: true, sparse: true }),
+    db.collection("user").createIndex({ email: 1 }),
+    db.collection("user").createIndex({ lastActiveAt: 1 }),
+    db.collection("push_subscriptions").createIndex({ userEmail: 1 }),
+    db.collection("push_subscriptions").createIndex({ endpoint: 1 }, { unique: true }),
   ]);
 
   // Seed companies

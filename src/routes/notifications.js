@@ -10,6 +10,12 @@ import {
   markAllNotificationsAsRead,
   deleteNotification,
 } from "../services/notificationService.js";
+import {
+  isPushConfigured,
+  getVapidPublicKey,
+  savePushSubscription,
+  removePushSubscription,
+} from "../services/pushService.js";
 
 const router = Router();
 
@@ -57,6 +63,38 @@ router.delete("/:id", requireAuth, asyncHandler(async (req, res) => {
     return notFound(res, "Notification not found or access denied.");
   }
   res.status(204).send();
+}));
+
+// GET /api/notifications/push/public-key - Check Push status and get public VAPID key
+router.get("/push/public-key", requireAuth, (req, res) => {
+  const isConfigured = isPushConfigured();
+  const publicKey = getVapidPublicKey();
+  res.json({
+    configured: isConfigured,
+    publicKey,
+  });
+});
+
+// POST /api/notifications/push/subscribe - Register browser push subscription
+router.post("/push/subscribe", requireAuth, asyncHandler(async (req, res) => {
+  const { subscription } = req.body;
+  if (!subscription || !subscription.endpoint) {
+    return badRequest(res, "Invalid subscription payload: endpoint is required.");
+  }
+
+  const saved = await savePushSubscription(req.user.email, subscription);
+  res.json({ success: true, subscription: saved });
+}));
+
+// POST /api/notifications/push/unsubscribe - Unregister browser push subscription
+router.post("/push/unsubscribe", requireAuth, asyncHandler(async (req, res) => {
+  const { endpoint } = req.body;
+  if (!endpoint) {
+    return badRequest(res, "endpoint is required to unsubscribe.");
+  }
+
+  const count = await removePushSubscription(req.user.email, endpoint);
+  res.json({ success: true, removed: count });
 }));
 
 export default router;

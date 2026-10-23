@@ -7,6 +7,7 @@
 import { getDb, toObjectId } from "../db.js";
 import { sseHub } from "./sseHub.js";
 import { queueTransactionalEmail } from "./emailService.js";
+import { sendPushNotification } from "./pushService.js";
 
 /**
  * Creates and delivers an in-app notification with deduplication and real-time push.
@@ -72,6 +73,13 @@ export async function createNotification({
 
   // Real-time broadcast to active browser sessions
   sseHub.sendToUser(normalizedEmail, notificationDoc);
+
+  // Attempt Web Push if enabled and user has subscriptions
+  sendPushNotification(normalizedEmail, {
+    title,
+    message,
+    url: link || "/dashboard",
+  }).catch(() => {});
 
   // Queue transactional email alert if requested
   if (sendEmail && emailTemplate && emailData) {

@@ -1,4 +1,5 @@
 import { getDb, toObjectId } from "../db.js";
+import { recordUserActivity } from "../services/presenceService.js";
 
 /**
  * Extracts session token from either Authorization header or Cookie header.
@@ -84,6 +85,12 @@ export async function requireAuth(req, res, next) {
 
     req.user = authData.user;
     req.session = authData.session;
+
+    // Track user authenticated activity (throttled)
+    if (authData.user?.email) {
+      recordUserActivity(authData.user.email);
+    }
+
     next();
   } catch (error) {
     next(error);

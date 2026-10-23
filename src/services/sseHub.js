@@ -56,12 +56,26 @@ class SSEHub {
       clientSet.delete(res);
       if (clientSet.size === 0) {
         this.clients.delete(normalizedEmail);
+        if (typeof this.onUserDisconnect === "function") {
+          try {
+            this.onUserDisconnect(normalizedEmail);
+          } catch (e) {
+            // ignore
+          }
+        }
       }
     };
 
     req.on("close", cleanup);
     res.on("close", cleanup);
     res.on("error", cleanup);
+  }
+
+  isUserOnline(email) {
+    if (!email) return false;
+    const normalizedEmail = email.toLowerCase().trim();
+    const clientSet = this.clients.get(normalizedEmail);
+    return Boolean(clientSet && clientSet.size > 0);
   }
 
   sendToUser(email, data, eventType = "notification") {

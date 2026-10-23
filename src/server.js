@@ -15,6 +15,7 @@ import auditRouter from "./routes/audit.js";
 import candidatesRouter from "./routes/candidates.js";
 import interviewsRouter from "./routes/interviews.js";
 import messagesRouter from "./routes/messages.js";
+import { startScheduler, stopScheduler } from "./services/scheduler.js";
 
 import { rateLimiter } from "./middleware/rateLimiter.js";
 
@@ -97,6 +98,7 @@ async function startServer() {
 
     server = app.listen(config.port, () => {
       console.log(`HireLoop API running on http://localhost:${config.port}`);
+      startScheduler();
     });
 
     server.on("error", (error) => {
@@ -117,6 +119,7 @@ async function startServer() {
 }
 
 async function shutdown() {
+  stopScheduler();
   if (!server) {
     await closeDatabase();
     process.exit(0);

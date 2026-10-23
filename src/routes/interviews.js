@@ -11,6 +11,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { createNotification } from "../services/notificationService.js";
 import { recordAuditLog } from "../services/auditService.js";
 import { generateIcsInvite, generateGoogleCalendarUrl } from "../services/calendarService.js";
+import { scheduleInterviewReminders, invalidateInterviewReminders } from "../services/reminderService.js";
 
 const router = Router();
 
@@ -100,6 +101,12 @@ router.post("/", requireAuth, asyncHandler(async (req, res) => {
 
   const result = await db.collection("interviews").insertOne(interviewDoc);
   const interviewId = result.insertedId.toString();
+  interviewDoc._id = result.insertedId;
+
+  // Schedule durable 24h & 1h reminders
+  scheduleInterviewReminders(interviewDoc).catch((err) => {
+    console.error("[Interviews] Reminder schedule error:", err.message);
+  });
 
   // If application is in Applied or Under Review or Shortlisted, advance status to Interview Scheduled
   const currentAppStatus = application.status || "Applied";
@@ -278,6 +285,15 @@ router.patch("/:id/status", requireAuth, asyncHandler(async (req, res) => {
     { returnDocument: "after" }
   );
 
+  // Sync scheduled reminders with new status
+  if (matchedStatus === "Canceled") {
+    invalidateInterviewReminders(_id, "canceled").catch(() => {});
+  } else if (matchedStatus === "Completed") {
+    invalidateInterviewReminders(_id, "completed").catch(() => {});
+  } else if (matchedStatus === "Confirmed") {
+    scheduleInterviewReminders(updated).catch(() => {});
+  }
+
   // If canceled, record administrative/recruiter audit entry
   if (matchedStatus === "Canceled") {
     recordAuditLog({
@@ -394,6 +410,11 @@ router.patch("/:id/reschedule", requireAuth, asyncHandler(async (req, res) => {
     },
     { returnDocument: "after" }
   );
+
+  // Invalidate old reminders and schedule new ones for updated appointment time
+  invalidateInterviewReminders(_id, "rescheduled")
+    .then(() => scheduleInterviewReminders(updated))
+    .catch((err) => console.error("[Interviews] Reschedule reminder update failed:", err.message));
 
   // Notify the other party
   const recipientEmail = isSeeker ? interview.recruiterEmail : interview.seekerEmail;
