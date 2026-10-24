@@ -601,7 +601,7 @@ export async function queueTransactionalEmail({
       type,
       subject,
       html,
-      unsubscribeToken: rawUnsubToken,
+      unsubscribeToken: null, // Raw token not retained for suppressed items
       idempotencyKey: idempotencyKey || null,
       status: "suppressed", // Accurately marked as suppressed
       attempts: 0,
@@ -679,6 +679,7 @@ export async function deliverOutboxItem(outboxId) {
           lastError: `Suppressed before delivery by user preference (${preferenceCheck.reason})`,
           updatedAt: new Date(),
         },
+        $unset: { unsubscribeToken: "" }, // Minimize token lifetime immediately upon suppression
       }
     );
     return { ...item, status: "suppressed", lastError: `Suppressed: ${preferenceCheck.reason}` };
@@ -710,6 +711,7 @@ export async function deliverOutboxItem(outboxId) {
           sentAt: new Date(),
           updatedAt: new Date(),
         },
+        $unset: { unsubscribeToken: "" }, // Minimize token lifetime immediately upon successful delivery
         $inc: { attempts: 1 },
       }
     );
@@ -728,6 +730,7 @@ export async function deliverOutboxItem(outboxId) {
           nextAttemptAt: new Date(Date.now() + 60000 * Math.pow(2, nextAttempt)), // Exponential backoff
           updatedAt: new Date(),
         },
+        ...(isExhausted ? { $unset: { unsubscribeToken: "" } } : {}),
         $inc: { attempts: 1 },
       }
     );

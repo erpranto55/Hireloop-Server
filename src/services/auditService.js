@@ -17,6 +17,8 @@ const SENSITIVE_FIELDS = new Set([
   "cardNumber",
   "cvv",
   "notesHistory",
+  "unsubscribeToken",
+  "tokenHash",
 ]);
 
 /**
@@ -152,5 +154,123 @@ export async function listAuditLogs({
     page: pageNum,
     limit: pageLimit,
     totalPages: Math.ceil(total / pageLimit) || 1,
+  };
+}
+
+/**
+ * Safely escapes a string value for CSV output with formula injection mitigation.
+ * If a value starts with =, +, -, @, \t, or \r, prepend a single quote (').
+ */
+export function sanitizeCsvCell(value) {
+  if (value === null || value === undefined) return "";
+  let str = typeof value === "object" ? JSON.stringify(value) : String(value);
+
+  // Formula injection prevention (OWASP CSV Injection guidelines)
+  if (/^[=+\-@\t\r]/.test(str)) {
+    str = `'${str}`;
+  }
+
+  // Wrap in double quotes and escape internal quotes if special chars exist
+  if (str.includes(",") || str.includes('"') || str.includes("\n") || str.includes("\r")) {
+    str = `"${str.replace(/"/g, '""')}"`;
+  }
+
+  return str;
+}
+
+/**
+ * Exports audit logs bounded to maxRecords (default 5000) in CSV or JSON.
+ */
+export async function exportAuditLogs({
+  format = "csv",
+  action,
+  targetType,
+  actorEmail,
+  startDate,
+  endDate,
+  q,
+  maxRecords = 5000,
+} = {}) {
+  const db = getDb();
+  const filter = {};
+
+  if (action && action !== "all") filter.action = action;
+  if (targetType && targetType !== "all") filter.targetType = targetType;
+  if (actorEmail) filter.actorEmail = new RegExp(`^${actorEmail.trim()}$`, "i");
+
+  if (startDate || endDate) {
+    filter.timestamp = {};
+    if (startDate) filter.timestamp.$gte = new Date(startDate);
+    if (endDate) {
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      filter.timestamp.$lte = end;
+    }
+  }
+
+  if (q) {
+    const searchRegex = new RegExp(q.trim(), "i");
+    filter.$or = [
+      { targetIdentifier: searchRegex },
+      { actorEmail: searchRegex },
+      { targetId: searchRegex },
+      { action: searchRegex },
+    ];
+  }
+
+  const logs = await db.collection("audit_logs")
+    .find(filter)
+    .sort({ timestamp: -1 })
+    .limit(Math.min(maxRecords, 5000))
+    .toArray();
+
+  if (format === "json") {
+    return {
+      contentType: "application/json",
+      filename: `audit-logs-${Date.now()}.json`,
+      data: JSON.stringify(logs, null, 2),
+      count: logs.length,
+    };
+  }
+
+  // CSV Generation
+  const headers = [
+    "Timestamp",
+    "Actor Email",
+    "Actor Role",
+    "Action",
+    "Target Type",
+    "Target ID",
+    "Target Identifier",
+    "Outcome",
+    "Before",
+    "After",
+    "Metadata",
+  ];
+
+  const rows = [headers.join(",")];
+
+  for (const log of logs) {
+    const row = [
+      sanitizeCsvCell(log.timestamp ? new Date(log.timestamp).toISOString() : ""),
+      sanitizeCsvCell(log.actorEmail || ""),
+      sanitizeCsvCell(log.actorRole || ""),
+      sanitizeCsvCell(log.action || ""),
+      sanitizeCsvCell(log.targetType || ""),
+      sanitizeCsvCell(log.targetId || ""),
+      sanitizeCsvCell(log.targetIdentifier || ""),
+      sanitizeCsvCell(log.outcome || "success"),
+      sanitizeCsvCell(log.before || ""),
+      sanitizeCsvCell(log.after || ""),
+      sanitizeCsvCell(log.metadata || ""),
+    ];
+    rows.push(row.join(","));
+  }
+
+  return {
+    contentType: "text/csv; charset=utf-8",
+    filename: `audit-logs-${Date.now()}.csv`,
+    data: rows.join("\r\n"),
+    count: logs.length,
   };
 }

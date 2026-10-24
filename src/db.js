@@ -59,6 +59,12 @@ export async function connectToDatabase() {
     db.collection("unsubscribe_tokens").createIndex({ tokenHash: 1 }, { unique: true }),
     db.collection("unsubscribe_tokens").createIndex({ userEmail: 1 }),
     db.collection("unsubscribe_tokens").createIndex({ expiresAt: 1 }),
+    db.collection("reports").createIndex({ status: 1, createdAt: -1 }),
+    db.collection("reports").createIndex({ targetType: 1, targetId: 1 }),
+    db.collection("reports").createIndex({ reporterEmail: 1, targetId: 1 }),
+    db.collection("reports").createIndex({ createdAt: -1 }),
+    db.collection("announcement_campaigns").createIndex({ createdAt: -1 }),
+    db.collection("announcement_campaigns").createIndex({ idempotencyKey: 1 }, { unique: true, sparse: true }),
   ]);
 
   // Seed companies
