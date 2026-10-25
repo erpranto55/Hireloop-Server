@@ -173,10 +173,18 @@ router.delete("/:id", requireAuth, asyncHandler(async (req, res) => {
   const isAdmin = (req.user.role || "").toLowerCase() === "admin";
   const isOwner = existingJob.recruiterEmail?.toLowerCase() === req.user.email?.toLowerCase();
 
-  if (!isAdmin && !isOwner) {
-    return res.status(403).json({
-      message: "Forbidden: You can only delete jobs posted by your account.",
-    });
+  if (!isOwner) {
+    if (!isAdmin) {
+      return res.status(403).json({
+        message: "Forbidden: You can only delete jobs posted by your account.",
+      });
+    }
+    const { hasPermission, PERMISSIONS } = await import("../services/permissionService.js");
+    if (!hasPermission(req.user, PERMISSIONS.MODERATION_JOBS)) {
+      return res.status(403).json({
+        message: "Forbidden: Insufficient permissions to moderate or delete job listings.",
+      });
+    }
   }
 
   const result = await db.collection("jobs").deleteOne({ _id });

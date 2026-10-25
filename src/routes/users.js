@@ -4,6 +4,7 @@ import { asyncHandler } from "../utils/asyncHandler.js";
 import { badRequest, notFound } from "../utils/http.js";
 import { requireAuth, sanitizeUser } from "../middleware/auth.js";
 import { recordAuditLog } from "../services/auditService.js";
+import { hasPermission, PERMISSIONS, validateSuperAdminLockout } from "../services/permissionService.js";
 
 const router = Router();
 
@@ -52,24 +53,67 @@ router.patch("/:email", requireAuth, asyncHandler(async (req, res) => {
   const updateData = {};
 
   if (isAdmin) {
-    // Admin can update status, role, and profile fields
+    // Admin can update status, role, and profile fields subject to role permissions
     if (req.body.status !== undefined) {
+      if (!hasPermission(req.user, PERMISSIONS.MODERATION_USERS) && !hasPermission(req.user, PERMISSIONS.ADMIN_MANAGE_ROLES)) {
+        return res.status(403).json({
+          message: "Forbidden: Insufficient permissions to modify user account standing.",
+        });
+      }
+
       const allowedStatuses = ["active", "suspended"];
       if (!allowedStatuses.includes(req.body.status)) {
         return badRequest(res, `Invalid status. Must be one of: ${allowedStatuses.join(", ")}`);
       }
+
+      // Check lockout prevention
+      const lockoutCheck = await validateSuperAdminLockout({
+        targetEmail,
+        nextStatus: req.body.status,
+      });
+      if (!lockoutCheck.allowed) {
+        return res.status(403).json({
+          message: `Forbidden: ${lockoutCheck.reason}`,
+        });
+      }
+
       updateData.status = req.body.status;
     }
 
     if (req.body.role !== undefined) {
+      if (!hasPermission(req.user, PERMISSIONS.ADMIN_MANAGE_ROLES)) {
+        return res.status(403).json({
+          message: "Forbidden: Only a Super Administrator can assign or modify user roles.",
+        });
+      }
+
       const allowedRoles = ["seeker", "recruiter", "admin"];
       if (!allowedRoles.includes(req.body.role)) {
         return badRequest(res, `Invalid role. Must be one of: ${allowedRoles.join(", ")}`);
       }
+
+      // Check lockout prevention
+      const lockoutCheck = await validateSuperAdminLockout({
+        targetEmail,
+        nextRole: req.body.role,
+      });
+      if (!lockoutCheck.allowed) {
+        return res.status(403).json({
+          message: `Forbidden: ${lockoutCheck.reason}`,
+        });
+      }
+
       updateData.role = req.body.role;
     }
 
-    if (req.body.plan !== undefined) updateData.plan = req.body.plan;
+    if (req.body.plan !== undefined) {
+      if (!hasPermission(req.user, PERMISSIONS.BILLING_ENTITLEMENTS) && !hasPermission(req.user, PERMISSIONS.ADMIN_MANAGE_ROLES)) {
+        return res.status(403).json({
+          message: "Forbidden: Insufficient permissions to modify user billing plan.",
+        });
+      }
+      updateData.plan = req.body.plan;
+    }
   } else {
     // Non-admin attempting to modify role or status must be rejected
     if (req.body.role !== undefined && req.body.role !== req.user.role) {

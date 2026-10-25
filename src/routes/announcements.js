@@ -1,7 +1,8 @@
 import { Router } from "express";
-import { requireAuth, requireRole } from "../middleware/auth.js";
+import { requireAuth, requirePermission } from "../middleware/auth.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { badRequest, created } from "../utils/http.js";
+import { PERMISSIONS } from "../services/permissionService.js";
 import {
   getAudienceCount,
   dispatchAnnouncementCampaign,
@@ -12,7 +13,7 @@ import {
 const router = Router();
 
 // GET /api/admin/announcements/audience-count - Audience preview count
-router.get("/audience-count", requireAuth, requireRole("admin"), asyncHandler(async (req, res) => {
+router.get("/audience-count", requireAuth, requirePermission(PERMISSIONS.ANNOUNCEMENTS_CREATE), asyncHandler(async (req, res) => {
   const { audience = "all", selectedEmails } = req.query;
   const emails = selectedEmails ? selectedEmails.split(",").map((e) => e.trim()) : [];
   const result = await getAudienceCount(audience, emails);
@@ -20,14 +21,14 @@ router.get("/audience-count", requireAuth, requireRole("admin"), asyncHandler(as
 }));
 
 // GET /api/admin/announcements - List historical broadcast campaigns
-router.get("/", requireAuth, requireRole("admin"), asyncHandler(async (req, res) => {
+router.get("/", requireAuth, requirePermission(PERMISSIONS.ANNOUNCEMENTS_CREATE), asyncHandler(async (req, res) => {
   const { page = 1, limit = 20 } = req.query;
   const result = await listAnnouncementCampaigns({ page, limit });
   res.json(result);
 }));
 
 // POST /api/admin/announcements - Dispatch controlled system broadcast
-router.post("/", requireAuth, requireRole("admin"), asyncHandler(async (req, res) => {
+router.post("/", requireAuth, requirePermission(PERMISSIONS.ANNOUNCEMENTS_CREATE), asyncHandler(async (req, res) => {
   const {
     title,
     message,

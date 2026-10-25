@@ -2,8 +2,9 @@ import { Router } from "express";
 import { getDb, toObjectId } from "../db.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { badRequest, created, notFound } from "../utils/http.js";
-import { optionalAuth, requireAuth, requireRole } from "../middleware/auth.js";
+import { optionalAuth, requireAuth, requireRole, requirePermission, hasPermission } from "../middleware/auth.js";
 import { recordAuditLog } from "../services/auditService.js";
+import { PERMISSIONS } from "../services/permissionService.js";
 
 const router = Router();
 
@@ -37,7 +38,7 @@ router.get("/", optionalAuth, asyncHandler(async (req, res) => {
 }));
 
 // GET /api/companies/admin/queue - Administrator verification queue with metrics
-router.get("/admin/queue", requireAuth, requireRole("admin"), asyncHandler(async (req, res) => {
+router.get("/admin/queue", requireAuth, requirePermission(PERMISSIONS.COMPANIES_REVIEW), asyncHandler(async (req, res) => {
   const { status = "all", industry, q, page = 1, limit = 20 } = req.query;
   const db = getDb();
   const pageNum = Math.max(1, Number(page) || 1);
@@ -145,9 +146,9 @@ router.patch("/:id", requireAuth, asyncHandler(async (req, res) => {
 
   // Company moderation status checks
   if (updateFields.status !== undefined) {
-    if (!isAdmin) {
+    if (!isAdmin || !hasPermission(req.user, PERMISSIONS.COMPANIES_WRITE)) {
       return res.status(403).json({
-        message: "Forbidden: Only platform administrators can update company verification status.",
+        message: "Forbidden: Insufficient permissions to modify company verification status.",
       });
     }
 

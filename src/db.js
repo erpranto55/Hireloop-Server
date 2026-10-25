@@ -63,9 +63,18 @@ export async function connectToDatabase() {
     db.collection("reports").createIndex({ targetType: 1, targetId: 1 }),
     db.collection("reports").createIndex({ reporterEmail: 1, targetId: 1 }),
     db.collection("reports").createIndex({ createdAt: -1 }),
+    db.collection("user").createIndex({ role: 1, adminRole: 1 }),
     db.collection("announcement_campaigns").createIndex({ createdAt: -1 }),
     db.collection("announcement_campaigns").createIndex({ idempotencyKey: 1 }, { unique: true, sparse: true }),
   ]);
+
+  // Ensure legacy admins have canonical adminRole
+  try {
+    const { migrateLegacyAdmins } = await import("./services/permissionService.js");
+    await migrateLegacyAdmins();
+  } catch (err) {
+    console.error("Admin role migration warning:", err.message);
+  }
 
   // Seed companies
   const companiesCount = await db.collection("companies").countDocuments();

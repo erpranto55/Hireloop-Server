@@ -7,6 +7,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { badRequest, created, notFound } from "../utils/http.js";
 import { createNotification } from "../services/notificationService.js";
+import { hasPermission, PERMISSIONS } from "../services/permissionService.js";
 
 const router = Router();
 
@@ -680,16 +681,17 @@ router.post("/webhook", asyncHandler(async (req, res) => {
   res.status(200).json({ received: true });
 }));
 
-// GET /api/payments - Payment history (Owner or Admin only)
+// GET /api/payments - Payment history (Owner or Billing Admin only)
 router.get("/", requireAuth, asyncHandler(async (req, res) => {
   const { role, status } = req.query;
   const filter = {};
   const isAdmin = (req.user.role || "").toLowerCase() === "admin";
+  const hasBillingRead = isAdmin && hasPermission(req.user, PERMISSIONS.BILLING_READ);
 
-  if (isAdmin) {
+  if (hasBillingRead) {
     if (req.query.userEmail) filter.userEmail = new RegExp(`^${req.query.userEmail}$`, "i");
   } else {
-    // Non-admins can only see their own payment history
+    // Non-billing admins and standard users can only see their own payment history
     filter.userEmail = new RegExp(`^${req.user.email}$`, "i");
   }
 
@@ -707,7 +709,15 @@ router.post("/", requireAuth, asyncHandler(async (req, res) => {
   if (missing.length) return badRequest(res, `Missing required fields: ${missing.join(", ")}`);
 
   const isAdmin = (req.user.role || "").toLowerCase() === "admin";
-  const userEmail = isAdmin && req.body.userEmail ? req.body.userEmail.toLowerCase() : req.user.email.toLowerCase();
+  const isForOtherUser = req.body.userEmail && req.body.userEmail.toLowerCase() !== req.user.email.toLowerCase();
+
+  if (isForOtherUser && (!isAdmin || !hasPermission(req.user, PERMISSIONS.BILLING_WRITE))) {
+    return res.status(403).json({
+      message: "Forbidden: Insufficient permissions to record payments for other user accounts.",
+    });
+  }
+
+  const userEmail = isForOtherUser ? req.body.userEmail.toLowerCase() : req.user.email.toLowerCase();
 
   const payment = {
     ...req.body,

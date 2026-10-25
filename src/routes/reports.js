@@ -1,8 +1,9 @@
 import { Router } from "express";
-import { requireAuth, requireRole } from "../middleware/auth.js";
+import { requireAuth, requireRole, requirePermission, hasPermission } from "../middleware/auth.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { badRequest, created, notFound } from "../utils/http.js";
 import { getDb } from "../db.js";
+import { PERMISSIONS } from "../services/permissionService.js";
 import {
   createReport,
   listReports,
@@ -64,7 +65,7 @@ router.get("/my", requireAuth, asyncHandler(async (req, res) => {
 // -------------------------------------------------------------
 
 // GET / - List all reports with filters and pagination
-router.get(["/", "/admin"], requireAuth, requireRole("admin"), asyncHandler(async (req, res) => {
+router.get(["/", "/admin"], requireAuth, requirePermission(PERMISSIONS.REPORTS_READ), asyncHandler(async (req, res) => {
   const {
     page = 1,
     limit = 20,
@@ -91,7 +92,7 @@ router.get(["/", "/admin"], requireAuth, requireRole("admin"), asyncHandler(asyn
 }));
 
 // GET /:id - View single report with target context
-router.get(["/:id", "/admin/:id"], requireAuth, requireRole("admin"), asyncHandler(async (req, res) => {
+router.get(["/:id", "/admin/:id"], requireAuth, requirePermission(PERMISSIONS.REPORTS_READ), asyncHandler(async (req, res) => {
   const result = await getReportDetails(req.params.id, req.user);
   if (!result) {
     return notFound(res, "Report not found.");
@@ -101,7 +102,7 @@ router.get(["/:id", "/admin/:id"], requireAuth, requireRole("admin"), asyncHandl
 }));
 
 // PATCH /:id - Update report status (e.g. claim, in_review)
-router.patch(["/:id", "/admin/:id"], requireAuth, requireRole("admin"), asyncHandler(async (req, res) => {
+router.patch(["/:id", "/admin/:id"], requireAuth, requirePermission(PERMISSIONS.REPORTS_WRITE), asyncHandler(async (req, res) => {
   const { status, assignedAdminEmail, resolutionNotes } = req.body;
 
   try {
@@ -117,11 +118,25 @@ router.patch(["/:id", "/admin/:id"], requireAuth, requireRole("admin"), asyncHan
 }));
 
 // POST /:id/action - Execute moderation action on target entity
-router.post(["/:id/action", "/admin/:id/action"], requireAuth, requireRole("admin"), asyncHandler(async (req, res) => {
+router.post(["/:id/action", "/admin/:id/action"], requireAuth, asyncHandler(async (req, res) => {
   const { actionType, resolutionNotes } = req.body;
 
   if (!actionType || !resolutionNotes) {
     return badRequest(res, "actionType and resolutionNotes are required.");
+  }
+
+  // Verify action-specific permissions
+  if (actionType === "suspend_user" && !hasPermission(req.user, PERMISSIONS.MODERATION_USERS)) {
+    return res.status(403).json({ message: "Forbidden: Missing permission to suspend user accounts." });
+  }
+  if (actionType === "close_job" && !hasPermission(req.user, PERMISSIONS.MODERATION_JOBS)) {
+    return res.status(403).json({ message: "Forbidden: Missing permission to close job listings." });
+  }
+  if (actionType === "reject_company" && !hasPermission(req.user, PERMISSIONS.COMPANIES_WRITE)) {
+    return res.status(403).json({ message: "Forbidden: Missing permission to modify company verification status." });
+  }
+  if ((actionType === "warn_user" || actionType === "dismiss_report") && !hasPermission(req.user, PERMISSIONS.REPORTS_WRITE)) {
+    return res.status(403).json({ message: "Forbidden: Missing permission to record warnings or dismiss reports." });
   }
 
   try {

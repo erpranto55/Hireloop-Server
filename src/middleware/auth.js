@@ -29,12 +29,18 @@ export function extractSessionToken(req) {
   return null;
 }
 
+import { resolveAdminRole, getEffectivePermissions, requirePermission } from "../services/permissionService.js";
+
 /**
  * Sanitizes user document to prevent exposing sensitive fields.
  */
 export function sanitizeUser(user) {
   if (!user) return null;
   const { password, ...sanitized } = user;
+  if ((user.role || "").toLowerCase() === "admin") {
+    sanitized.adminRole = resolveAdminRole(user);
+    sanitized.permissions = getEffectivePermissions(user);
+  }
   return sanitized;
 }
 
@@ -141,3 +147,5 @@ export function requireRole(...allowedRoles) {
     next();
   };
 }
+
+export { requirePermission };
