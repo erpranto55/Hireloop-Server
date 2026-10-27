@@ -7,6 +7,11 @@ import { Router } from "express";
 import { getDb, toObjectId } from "../db.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import {
+  getUserCompanyMemberships,
+  verifyVacancyAccess,
+  COMPANY_ROLES,
+} from "../services/companyWorkspaceService.js";
 
 const router = Router();
 
@@ -26,16 +31,50 @@ router.get("/search", requireAuth, requireRole("recruiter", "admin"), asyncHandl
   const isAdmin = (req.user.role || "").toLowerCase() === "admin";
   const recruiterEmail = req.user.email.toLowerCase().trim();
 
-  // 1. Establish authorized job scope
-  const jobFilter = isAdmin ? {} : { recruiterEmail: new RegExp(`^${recruiterEmail}$`, "i") };
-  if (jobId) {
-    const jobObjectId = toObjectId(jobId);
-    jobFilter._id = jobObjectId ? jobObjectId : jobId;
-  }
+  // 1. Establish authorized job scope across company workspaces
+  let authorizedJobs = [];
 
-  const authorizedJobs = await db.collection("jobs").find(jobFilter, {
-    projection: { _id: 1, title: 1, companyName: 1, recruiterEmail: 1 },
-  }).toArray();
+  if (isAdmin) {
+    const jobFilter = {};
+    if (jobId) {
+      const jobObjectId = toObjectId(jobId);
+      jobFilter._id = jobObjectId ? jobObjectId : jobId;
+    }
+    authorizedJobs = await db.collection("jobs").find(jobFilter, {
+      projection: { _id: 1, title: 1, companyName: 1, recruiterEmail: 1, companyId: 1 },
+    }).toArray();
+  } else {
+    const memberships = await getUserCompanyMemberships(recruiterEmail);
+    const membershipMap = new Map();
+    memberships.forEach((m) => membershipMap.set(m.companyId, m.role));
+
+    // Interviewers cannot perform global candidate search; they can only see jobs they are assigned to
+    const ownerOrHmCompanyIds = memberships
+      .filter((m) => m.role === COMPANY_ROLES.OWNER || m.role === COMPANY_ROLES.HIRING_MANAGER)
+      .map((m) => m.companyId);
+
+    const queryOr = [
+      { recruiterEmail: new RegExp(`^${recruiterEmail}$`, "i") },
+      { assignedMemberEmails: recruiterEmail },
+    ];
+    if (ownerOrHmCompanyIds.length > 0) {
+      queryOr.push({ companyId: { $in: ownerOrHmCompanyIds } });
+    }
+
+    const candidateJobs = await db.collection("jobs").find(
+      { $or: queryOr },
+      { projection: { _id: 1, title: 1, companyName: 1, recruiterEmail: 1, companyId: 1, assignedMemberEmails: 1 } }
+    ).toArray();
+
+    // Verify access
+    for (const job of candidateJobs) {
+      if (jobId && job._id.toString() !== jobId.toString()) continue;
+      const access = await verifyVacancyAccess(req.user, job, "view");
+      if (access.authorized) {
+        authorizedJobs.push(job);
+      }
+    }
+  }
 
   const authorizedJobIds = authorizedJobs.map((j) => j._id.toString());
 

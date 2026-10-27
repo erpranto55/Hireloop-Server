@@ -44,10 +44,10 @@ test("resolveAdminRole determines canonical role with legacy fallback", () => {
     ADMIN_ROLES.SUPER_ADMIN
   );
 
-  // Backward compatibility: legacy admin without adminRole maps safely to super_admin
-  assert.equal(resolveAdminRole({ role: "admin" }), ADMIN_ROLES.SUPER_ADMIN);
-  assert.equal(resolveAdminRole({ role: "admin", adminRole: "" }), ADMIN_ROLES.SUPER_ADMIN);
-  assert.equal(resolveAdminRole({ role: "admin", adminRole: "unknown_role" }), ADMIN_ROLES.SUPER_ADMIN);
+  // Backward compatibility & Least Privilege: legacy admin without explicit adminRole maps safely to support_moderator
+  assert.equal(resolveAdminRole({ role: "admin" }), ADMIN_ROLES.SUPPORT_MODERATOR);
+  assert.equal(resolveAdminRole({ role: "admin", adminRole: "" }), ADMIN_ROLES.SUPPORT_MODERATOR);
+  assert.equal(resolveAdminRole({ role: "admin", adminRole: "unknown_role" }), ADMIN_ROLES.SUPPORT_MODERATOR);
 });
 
 test("getEffectivePermissions enforces least-privilege matrix boundaries", () => {

@@ -89,8 +89,8 @@ export function resolveAdminRole(user) {
   if (SUPPORTED_ADMIN_ROLES.includes(roleCandidate)) {
     return roleCandidate;
   }
-  // Default legacy unassigned admin to super_admin
-  return ADMIN_ROLES.SUPER_ADMIN;
+  // Default legacy unassigned admin to least-privilege support_moderator rather than super_admin
+  return ADMIN_ROLES.SUPPORT_MODERATOR;
 }
 
 /**
@@ -215,12 +215,22 @@ export async function validateSuperAdminLockout({ targetEmail, nextRole, nextAdm
  */
 export async function migrateLegacyAdmins() {
   const db = getDb();
+
+  // 1. Check if an active Super Administrator already exists
+  const existingSuperAdmin = await db.collection("user").findOne({
+    role: "admin",
+    adminRole: ADMIN_ROLES.SUPER_ADMIN,
+    status: { $ne: "suspended" },
+  });
+
+  // 2. Find legacy admin accounts lacking a canonical adminRole
   const unmigratedAdmins = await db
     .collection("user")
     .find({
       role: "admin",
       $or: [{ adminRole: { $exists: false } }, { adminRole: null }, { adminRole: "" }],
     })
+    .sort({ createdAt: 1 })
     .toArray();
 
   if (unmigratedAdmins.length === 0) {
@@ -228,12 +238,31 @@ export async function migrateLegacyAdmins() {
   }
 
   let count = 0;
-  for (const admin of unmigratedAdmins) {
+  let hasBootstrappedSuperAdmin = Boolean(existingSuperAdmin);
+  const trustedBootstrapEmail = (process.env.INITIAL_SUPER_ADMIN_EMAIL || "").toLowerCase().trim();
+
+  for (let i = 0; i < unmigratedAdmins.length; i++) {
+    const admin = unmigratedAdmins[i];
+    const adminEmail = (admin.email || "").toLowerCase().trim();
+
+    // Determine target role:
+    // Only elevate to super_admin if no active super_admin exists AND (email matches bootstrap email OR is the single earliest account)
+    let assignedRole = ADMIN_ROLES.SUPPORT_MODERATOR;
+    if (!hasBootstrappedSuperAdmin) {
+      if (trustedBootstrapEmail && adminEmail === trustedBootstrapEmail) {
+        assignedRole = ADMIN_ROLES.SUPER_ADMIN;
+        hasBootstrappedSuperAdmin = true;
+      } else if (!trustedBootstrapEmail && i === 0) {
+        assignedRole = ADMIN_ROLES.SUPER_ADMIN;
+        hasBootstrappedSuperAdmin = true;
+      }
+    }
+
     await db.collection("user").updateOne(
       { _id: admin._id },
       {
         $set: {
-          adminRole: ADMIN_ROLES.SUPER_ADMIN,
+          adminRole: assignedRole,
           updatedAt: new Date(),
         },
       }
@@ -241,13 +270,15 @@ export async function migrateLegacyAdmins() {
 
     recordAuditLog({
       actor: { email: "system@hireloop.internal", role: "system" },
-      action: "admin_role_migrated",
+      action: assignedRole === ADMIN_ROLES.SUPER_ADMIN ? "initial_super_admin_bootstrapped" : "admin_role_migrated",
       targetType: "user",
       targetId: admin._id?.toString(),
       targetIdentifier: admin.email,
       before: { role: admin.role, adminRole: admin.adminRole || null },
-      after: { role: "admin", adminRole: ADMIN_ROLES.SUPER_ADMIN },
-      reason: "Automated backward-compatible migration of legacy admin account to super_admin.",
+      after: { role: "admin", adminRole: assignedRole },
+      reason: assignedRole === ADMIN_ROLES.SUPER_ADMIN
+        ? "Explicit initial Super Administrator provisioned via trusted bootstrap."
+        : "Legacy admin account safely mapped to least-privilege support_moderator.",
     });
 
     count++;

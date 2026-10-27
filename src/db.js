@@ -66,6 +66,16 @@ export async function connectToDatabase() {
     db.collection("user").createIndex({ role: 1, adminRole: 1 }),
     db.collection("announcement_campaigns").createIndex({ createdAt: -1 }),
     db.collection("announcement_campaigns").createIndex({ idempotencyKey: 1 }, { unique: true, sparse: true }),
+    db.collection("company_memberships").createIndex({ companyId: 1, userEmail: 1 }, { unique: true }),
+    db.collection("company_memberships").createIndex({ userEmail: 1, status: 1 }),
+    db.collection("company_memberships").createIndex({ companyId: 1, status: 1 }),
+    db.collection("company_invitations").createIndex({ tokenHash: 1 }, { unique: true }),
+    db.collection("company_invitations").createIndex({ companyId: 1, status: 1 }),
+    db.collection("company_invitations").createIndex({ inviteeEmail: 1 }),
+    db.collection("company_invitations").createIndex({ expiresAt: 1 }),
+    db.collection("jobs").createIndex({ companyId: 1, status: 1 }),
+    db.collection("jobs").createIndex({ assignedMemberEmails: 1 }),
+    db.collection("audit_logs").createIndex({ companyId: 1, timestamp: -1 }),
   ]);
 
   // Ensure legacy admins have canonical adminRole
@@ -74,6 +84,14 @@ export async function connectToDatabase() {
     await migrateLegacyAdmins();
   } catch (err) {
     console.error("Admin role migration warning:", err.message);
+  }
+
+  // Idempotently ensure companies have active company_owner membership records
+  try {
+    const { migrateCompanyMemberships } = await import("./services/companyWorkspaceService.js");
+    await migrateCompanyMemberships();
+  } catch (err) {
+    console.error("Company membership migration warning:", err.message);
   }
 
   // Seed companies

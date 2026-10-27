@@ -178,6 +178,13 @@ router.patch(
       { returnDocument: "after", projection: { password: 0 } }
     );
 
+    // Revoke active sessions if demoted or revoked so stale tokens cannot operate
+    if (isRevocation || updateFields.adminRole !== currentAdminRole) {
+      await db.collection("session").deleteMany({
+        $or: [{ userId: targetUser._id }, { userId: targetUser._id?.toString() }],
+      });
+    }
+
     // Record audit event
     recordAuditLog({
       actor: req.user,

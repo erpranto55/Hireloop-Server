@@ -5,6 +5,11 @@ import { badRequest, created, notFound } from "../utils/http.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { getSeekerApplicationLimit } from "../config/plans.js";
 import { createNotification } from "../services/notificationService.js";
+import {
+  verifyVacancyAccess,
+  getUserCompanyMemberships,
+  assignCandidateReview,
+} from "../services/companyWorkspaceService.js";
 
 const router = Router();
 
@@ -54,19 +59,45 @@ router.get("/", requireAuth, asyncHandler(async (req, res) => {
     if (jobId) filter.jobId = jobId;
     if (recruiterEmail) filter.recruiterEmail = new RegExp(`^${recruiterEmail}$`, "i");
   } else if (userRole === "recruiter") {
-    // Recruiter can only view applications for their posted jobs
+    // Recruiter can view applications for all company vacancies they have access to
     if (jobId) {
-      // Verify recruiter owns this job
       const jobObjectId = toObjectId(jobId);
       const job = await db.collection("jobs").findOne(jobObjectId ? { _id: jobObjectId } : { id: jobId });
-      if (!job || job.recruiterEmail?.toLowerCase() !== req.user.email.toLowerCase()) {
+      if (!job) return notFound(res, "Job listing not found");
+
+      const access = await verifyVacancyAccess(req.user, job, "view");
+      if (!access.authorized) {
         return res.status(403).json({
-          message: "Forbidden: You can only view applications for jobs posted by your account.",
+          message: `Forbidden: ${access.reason}`,
         });
       }
       filter.jobId = jobId;
     } else {
-      filter.recruiterEmail = new RegExp(`^${req.user.email}$`, "i");
+      // Find all company workspaces user belongs to
+      const memberships = await getUserCompanyMemberships(req.user.email);
+      const companyIds = memberships.map((m) => m.companyId);
+
+      // Find all jobs belonging to these companies or directly created by this user
+      const candidateJobs = await db.collection("jobs").find({
+        $or: [
+          { companyId: { $in: companyIds } },
+          { recruiterEmail: new RegExp(`^${req.user.email}$`, "i") },
+          { assignedMemberEmails: req.user.email.toLowerCase() },
+        ],
+      }, { projection: { _id: 1, companyId: 1, recruiterEmail: 1, assignedMemberEmails: 1 } }).toArray();
+
+      const accessibleJobIds = [];
+      for (const j of candidateJobs) {
+        const access = await verifyVacancyAccess(req.user, j, "view");
+        if (access.authorized) {
+          accessibleJobIds.push(j._id.toString());
+        }
+      }
+
+      filter.$or = [
+        { jobId: { $in: accessibleJobIds } },
+        { recruiterEmail: new RegExp(`^${req.user.email}$`, "i") },
+      ];
     }
   } else {
     // Seeker can strictly only view their own applications
@@ -105,16 +136,25 @@ router.get("/:id", requireAuth, asyncHandler(async (req, res) => {
   const userEmail = req.user.email.toLowerCase();
 
   const isOwnerSeeker = application.seekerEmail?.toLowerCase() === userEmail;
-  const isOwnerRecruiter = application.recruiterEmail?.toLowerCase() === userEmail;
   const isAdmin = userRole === "admin";
 
-  if (!isOwnerSeeker && !isOwnerRecruiter && !isAdmin) {
+  let isAuthorizedRecruiter = application.recruiterEmail?.toLowerCase() === userEmail;
+  if (!isAuthorizedRecruiter && !isAdmin && !isOwnerSeeker) {
+    const jobObjectId = toObjectId(application.jobId);
+    const job = jobObjectId ? await db.collection("jobs").findOne({ _id: jobObjectId }) : null;
+    if (job) {
+      const access = await verifyVacancyAccess(req.user, job, "view");
+      isAuthorizedRecruiter = access.authorized;
+    }
+  }
+
+  if (!isOwnerSeeker && !isAuthorizedRecruiter && !isAdmin) {
     return res.status(403).json({
       message: "Forbidden: You do not have permission to view this application.",
     });
   }
 
-  if (isOwnerSeeker && !isAdmin && !isOwnerRecruiter) {
+  if (isOwnerSeeker && !isAdmin && !isAuthorizedRecruiter) {
     return res.json(sanitizeApplicationForSeeker(application));
   }
 
@@ -265,11 +305,22 @@ router.patch("/:id/status", requireAuth, asyncHandler(async (req, res) => {
   if (!application) return notFound(res, "Application not found");
 
   const isAdmin = (req.user.role || "").toLowerCase() === "admin";
-  const isRecruiterOwner = application.recruiterEmail?.toLowerCase() === req.user.email?.toLowerCase();
 
-  if (!isAdmin && !isRecruiterOwner) {
+  let isAuthorizedRecruiter = false;
+  if (!isAdmin) {
+    const jobObjectId = toObjectId(application.jobId);
+    const job = jobObjectId ? await db.collection("jobs").findOne({ _id: jobObjectId }) : null;
+    if (job) {
+      const access = await verifyVacancyAccess(req.user, job, "review_applications");
+      isAuthorizedRecruiter = access.authorized;
+    } else {
+      isAuthorizedRecruiter = application.recruiterEmail?.toLowerCase() === req.user.email?.toLowerCase();
+    }
+  }
+
+  if (!isAdmin && !isAuthorizedRecruiter) {
     return res.status(403).json({
-      message: "Forbidden: Only the recruiter for this job or an administrator can update application status.",
+      message: "Forbidden: Only an authorized company recruiter or administrator can update application status.",
     });
   }
 
@@ -347,17 +398,29 @@ router.patch("/:id/notes", requireAuth, asyncHandler(async (req, res) => {
   if (!application) return notFound(res, "Application not found");
 
   const isAdmin = (req.user.role || "").toLowerCase() === "admin";
-  const isRecruiterOwner = application.recruiterEmail?.toLowerCase() === req.user.email?.toLowerCase();
 
-  if (!isAdmin && !isRecruiterOwner) {
+  let isAuthorizedRecruiter = false;
+  if (!isAdmin) {
+    const jobObjectId = toObjectId(application.jobId);
+    const job = jobObjectId ? await db.collection("jobs").findOne({ _id: jobObjectId }) : null;
+    if (job) {
+      const access = await verifyVacancyAccess(req.user, job, "internal_notes");
+      isAuthorizedRecruiter = access.authorized;
+    } else {
+      isAuthorizedRecruiter = application.recruiterEmail?.toLowerCase() === req.user.email?.toLowerCase();
+    }
+  }
+
+  if (!isAdmin && !isAuthorizedRecruiter) {
     return res.status(403).json({
-      message: "Forbidden: Only the recruiter for this job or an administrator can modify private notes.",
+      message: "Forbidden: Only an authorized company recruiter or administrator can modify private notes.",
     });
   }
 
   const noteEntry = {
     content: notesText,
     author: req.user.email,
+    authorName: req.user.name || "Recruiter",
     updatedAt: new Date(),
   };
 
@@ -376,6 +439,21 @@ router.patch("/:id/notes", requireAuth, asyncHandler(async (req, res) => {
   );
 
   res.json(result);
+}));
+
+// PATCH /api/applications/:id/assign - Assign candidate review to team member
+router.patch("/:id/assign", requireAuth, asyncHandler(async (req, res) => {
+  const { reviewerEmail } = req.body;
+  try {
+    const result = await assignCandidateReview({
+      applicationId: req.params.id,
+      reviewerEmail,
+      actorUser: req.user,
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
 }));
 
 export default router;

@@ -205,6 +205,29 @@ export const emailTemplates = {
     };
   },
 
+  companyTeamInvitation({ companyName, inviterName, roleName, inviteUrl, expiresInDays = 7 }) {
+    return {
+      subject: `Invitation to join ${companyName} on HireLoop`,
+      html: renderBaseTemplate({
+        title: `Team Invitation: ${companyName}`,
+        preheader: `${inviterName} has invited you to join ${companyName} as a ${roleName}`,
+        bodyHtml: `
+          <p>Hello,</p>
+          <p><strong style="color: #ffffff;">${inviterName}</strong> has invited you to join the <strong style="color: #ffffff;">${companyName}</strong> recruitment workspace on HireLoop as <strong style="color: #818cf8;">${roleName}</strong>.</p>
+          <div class="meta-box">
+            <div class="meta-row"><span class="meta-label">Company:</span><span class="meta-value">${companyName}</span></div>
+            <div class="meta-row"><span class="meta-label">Assigned Role:</span><span class="meta-value" style="color: #818cf8;">${roleName}</span></div>
+            <div class="meta-row"><span class="meta-label">Invited By:</span><span class="meta-value">${inviterName}</span></div>
+            <div class="meta-row"><span class="meta-label">Expires In:</span><span class="meta-value">${expiresInDays} days</span></div>
+          </div>
+          <p>As a team member, you can collaborate on vacancies, review applications, and coordinate interview workflows within the scope granted to your role.</p>
+        `,
+        ctaText: "Accept Invitation",
+        ctaUrl: inviteUrl || "/dashboard/recruiter/team",
+      }),
+    };
+  },
+
   subscriptionActivated({ planName, role, billingUrl }) {
     return {
       subject: `HireLoop ${planName} Subscription Activated`,

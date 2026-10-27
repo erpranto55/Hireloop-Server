@@ -12,6 +12,10 @@ import { createNotification } from "../services/notificationService.js";
 import { recordAuditLog } from "../services/auditService.js";
 import { generateIcsInvite, generateGoogleCalendarUrl } from "../services/calendarService.js";
 import { scheduleInterviewReminders, invalidateInterviewReminders } from "../services/reminderService.js";
+import {
+  verifyVacancyAccess,
+  getUserCompanyMemberships,
+} from "../services/companyWorkspaceService.js";
 
 const router = Router();
 
@@ -59,9 +63,20 @@ router.post("/", requireAuth, asyncHandler(async (req, res) => {
   const userRole = (req.user.role || "").toLowerCase();
   const userEmail = req.user.email.toLowerCase();
   const isAdmin = userRole === "admin";
-  const isRecruiterOwner = application.recruiterEmail?.toLowerCase() === userEmail;
 
-  if (!isAdmin && !isRecruiterOwner) {
+  let isAuthorized = isAdmin;
+  if (!isAdmin) {
+    const jobObjectId = toObjectId(application.jobId);
+    const job = jobObjectId ? await db.collection("jobs").findOne({ _id: jobObjectId }) : null;
+    if (job) {
+      const access = await verifyVacancyAccess(req.user, job, "manage_interviews");
+      isAuthorized = access.authorized;
+    } else {
+      isAuthorized = application.recruiterEmail?.toLowerCase() === userEmail;
+    }
+  }
+
+  if (!isAuthorized) {
     return res.status(403).json({
       message: "Forbidden: You are not authorized to schedule interviews for this job application.",
     });
@@ -182,7 +197,29 @@ router.get("/", requireAuth, asyncHandler(async (req, res) => {
 
   if (!isAdmin) {
     if (userRole === "recruiter") {
-      filter.recruiterEmail = new RegExp(`^${userEmail}$`, "i");
+      const memberships = await getUserCompanyMemberships(userEmail);
+      const companyIds = memberships.map((m) => m.companyId);
+
+      const candidateJobs = await db.collection("jobs").find({
+        $or: [
+          { companyId: { $in: companyIds } },
+          { recruiterEmail: new RegExp(`^${userEmail}$`, "i") },
+          { assignedMemberEmails: userEmail },
+        ],
+      }, { projection: { _id: 1, companyId: 1, recruiterEmail: 1, assignedMemberEmails: 1 } }).toArray();
+
+      const accessibleJobIds = [];
+      for (const j of candidateJobs) {
+        const access = await verifyVacancyAccess(req.user, j, "participate_interviews");
+        if (access.authorized) {
+          accessibleJobIds.push(j._id.toString());
+        }
+      }
+
+      filter.$or = [
+        { jobId: { $in: accessibleJobIds } },
+        { recruiterEmail: new RegExp(`^${userEmail}$`, "i") },
+      ];
     } else {
       filter.seekerEmail = new RegExp(`^${userEmail}$`, "i");
     }
@@ -225,13 +262,23 @@ router.get("/:id", requireAuth, asyncHandler(async (req, res) => {
   const userRole = (req.user.role || "").toLowerCase();
   const userEmail = req.user.email.toLowerCase();
   const isAdmin = userRole === "admin";
-  const isParticipant =
+
+  let isAuthorized = isAdmin ||
     interview.recruiterEmail?.toLowerCase() === userEmail ||
     interview.seekerEmail?.toLowerCase() === userEmail;
 
-  if (!isAdmin && !isParticipant) {
+  if (!isAuthorized) {
+    const jobObjectId = toObjectId(interview.jobId);
+    const job = jobObjectId ? await db.collection("jobs").findOne({ _id: jobObjectId }) : null;
+    if (job) {
+      const access = await verifyVacancyAccess(req.user, job, "participate_interviews");
+      isAuthorized = access.authorized;
+    }
+  }
+
+  if (!isAuthorized) {
     return res.status(403).json({
-      message: "Forbidden: You are not a participant in this interview.",
+      message: "Forbidden: You are not authorized to access this interview appointment.",
     });
   }
 
@@ -260,10 +307,20 @@ router.patch("/:id/status", requireAuth, asyncHandler(async (req, res) => {
   const userRole = (req.user.role || "").toLowerCase();
   const userEmail = req.user.email.toLowerCase();
   const isAdmin = userRole === "admin";
-  const isRecruiter = interview.recruiterEmail?.toLowerCase() === userEmail;
+  const isDirectRecruiter = interview.recruiterEmail?.toLowerCase() === userEmail;
   const isSeeker = interview.seekerEmail?.toLowerCase() === userEmail;
 
-  if (!isAdmin && !isRecruiter && !isSeeker) {
+  let isAuthorizedRecruiter = isDirectRecruiter;
+  if (!isAuthorizedRecruiter && !isSeeker && !isAdmin) {
+    const jobObjectId = toObjectId(interview.jobId);
+    const job = jobObjectId ? await db.collection("jobs").findOne({ _id: jobObjectId }) : null;
+    if (job) {
+      const access = await verifyVacancyAccess(req.user, job, "manage_interviews");
+      isAuthorizedRecruiter = access.authorized;
+    }
+  }
+
+  if (!isAdmin && !isAuthorizedRecruiter && !isSeeker) {
     return res.status(403).json({
       message: "Forbidden: You do not have permission to modify this interview appointment.",
     });
@@ -368,10 +425,20 @@ router.patch("/:id/reschedule", requireAuth, asyncHandler(async (req, res) => {
   const userRole = (req.user.role || "").toLowerCase();
   const userEmail = req.user.email.toLowerCase();
   const isAdmin = userRole === "admin";
-  const isRecruiter = interview.recruiterEmail?.toLowerCase() === userEmail;
+  const isDirectRecruiter = interview.recruiterEmail?.toLowerCase() === userEmail;
   const isSeeker = interview.seekerEmail?.toLowerCase() === userEmail;
 
-  if (!isAdmin && !isRecruiter && !isSeeker) {
+  let isAuthorizedRecruiter = isDirectRecruiter;
+  if (!isAuthorizedRecruiter && !isSeeker && !isAdmin) {
+    const jobObjectId = toObjectId(interview.jobId);
+    const job = jobObjectId ? await db.collection("jobs").findOne({ _id: jobObjectId }) : null;
+    if (job) {
+      const access = await verifyVacancyAccess(req.user, job, "manage_interviews");
+      isAuthorizedRecruiter = access.authorized;
+    }
+  }
+
+  if (!isAdmin && !isAuthorizedRecruiter && !isSeeker) {
     return res.status(403).json({
       message: "Forbidden: You are not authorized to reschedule this appointment.",
     });

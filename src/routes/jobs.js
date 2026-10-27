@@ -6,6 +6,12 @@ import { requireAuth, requireRole, optionalAuth } from "../middleware/auth.js";
 import { getRecruiterJobLimit } from "../config/plans.js";
 import { recordAuditLog } from "../services/auditService.js";
 import { recordJobViewHandler } from "./analytics.js";
+import {
+  verifyCompanyAccess,
+  verifyVacancyAccess,
+  assignVacancyMembers,
+  COMPANY_ROLES,
+} from "../services/companyWorkspaceService.js";
 
 const router = Router();
 
@@ -53,36 +59,53 @@ router.post("/", requireAuth, requireRole("recruiter", "admin"), asyncHandler(as
   if (missing.length) return badRequest(res, `Missing required fields: ${missing.join(", ")}`);
 
   const isAdmin = (req.user.role || "").toLowerCase() === "admin";
-  // Enforce recruiter email matches authenticated user unless admin
   const recruiterEmail = isAdmin && req.body.recruiterEmail ? req.body.recruiterEmail : req.user.email;
   const status = req.body.status || "active";
 
   const db = getDb();
 
-  // Enforce recruiter active job limits on non-admins
-  if (!isAdmin && status === "active") {
-    const user = await db.collection("user").findOne({ email: new RegExp(`^${recruiterEmail}$`, "i") });
-    const planName = user?.plan || "Free";
-    const limit = getRecruiterJobLimit(planName);
-
-    const activeCount = await db.collection("jobs").countDocuments({
-      recruiterEmail: new RegExp(`^${recruiterEmail}$`, "i"),
-      status: "active",
-    });
-
-    if (activeCount >= limit) {
+  // Enforce company workspace authorization and active job limits on non-admins
+  if (!isAdmin) {
+    const access = await verifyCompanyAccess(req.user, req.body.companyId, COMPANY_ROLES.HIRING_MANAGER);
+    if (!access.authorized) {
       return res.status(403).json({
-        message: `Active job post limit reached for your ${planName} plan (${limit} active jobs allowed). Please upgrade your plan or archive an existing job.`,
-        limit,
-        activeCount,
-        plan: planName,
+        message: "Forbidden: You must be a Company Owner or Hiring Manager to post vacancies for this company.",
       });
     }
+
+    if (status === "active") {
+      // Authoritative company quota is based on the company owner's subscription plan
+      const compObjectId = toObjectId(req.body.companyId);
+      const company = compObjectId ? await db.collection("companies").findOne({ _id: compObjectId }) : null;
+      const ownerEmail = company?.recruiterEmail || recruiterEmail;
+      const ownerUser = await db.collection("user").findOne({ email: new RegExp(`^${ownerEmail}$`, "i") });
+      const planName = ownerUser?.plan || "Free";
+      const limit = getRecruiterJobLimit(planName);
+
+      const activeCount = await db.collection("jobs").countDocuments({
+        companyId: req.body.companyId,
+        status: "active",
+      });
+
+      if (activeCount >= limit) {
+        return res.status(403).json({
+          message: `Active job post limit reached for your company workspace (${limit} active jobs allowed on the ${planName} plan). Please upgrade your plan or archive an existing listing.`,
+          limit,
+          activeCount,
+          plan: planName,
+        });
+      }
+    }
   }
+
+  const assignedMemberEmails = Array.isArray(req.body.assignedMemberEmails) && req.body.assignedMemberEmails.length > 0
+    ? req.body.assignedMemberEmails.map((e) => e.toLowerCase().trim())
+    : [recruiterEmail.toLowerCase().trim()];
 
   const job = {
     ...req.body,
     recruiterEmail,
+    assignedMemberEmails,
     status,
     applicantsCount: 0,
     createdAt: new Date(),
@@ -93,7 +116,7 @@ router.post("/", requireAuth, requireRole("recruiter", "admin"), asyncHandler(as
   created(res, { ...job, _id: result.insertedId });
 }));
 
-// PATCH /api/jobs/:id - Update job (Owner recruiter or Admin only)
+// PATCH /api/jobs/:id - Update job (Authorized recruiter or Admin)
 router.patch("/:id", requireAuth, asyncHandler(async (req, res) => {
   const _id = toObjectId(req.params.id);
   if (!_id) return badRequest(res, "Invalid job id");
@@ -103,28 +126,33 @@ router.patch("/:id", requireAuth, asyncHandler(async (req, res) => {
   if (!existingJob) return notFound(res, "Job not found");
 
   const isAdmin = (req.user.role || "").toLowerCase() === "admin";
-  const isOwner = existingJob.recruiterEmail?.toLowerCase() === req.user.email?.toLowerCase();
 
-  if (!isAdmin && !isOwner) {
-    return res.status(403).json({
-      message: "Forbidden: You can only edit jobs posted by your account.",
-    });
+  if (!isAdmin) {
+    const access = await verifyVacancyAccess(req.user, existingJob, "edit");
+    if (!access.authorized) {
+      return res.status(403).json({
+        message: `Forbidden: ${access.reason}`,
+      });
+    }
   }
 
   // If activating an inactive job, verify active job limit
   if (!isAdmin && req.body.status === "active" && existingJob.status !== "active") {
-    const user = await db.collection("user").findOne({ email: new RegExp(`^${existingJob.recruiterEmail}$`, "i") });
-    const planName = user?.plan || "Free";
+    const compObjectId = toObjectId(existingJob.companyId);
+    const company = compObjectId ? await db.collection("companies").findOne({ _id: compObjectId }) : null;
+    const ownerEmail = company?.recruiterEmail || existingJob.recruiterEmail;
+    const ownerUser = await db.collection("user").findOne({ email: new RegExp(`^${ownerEmail}$`, "i") });
+    const planName = ownerUser?.plan || "Free";
     const limit = getRecruiterJobLimit(planName);
 
     const activeCount = await db.collection("jobs").countDocuments({
-      recruiterEmail: new RegExp(`^${existingJob.recruiterEmail}$`, "i"),
+      companyId: existingJob.companyId,
       status: "active",
     });
 
     if (activeCount >= limit) {
       return res.status(403).json({
-        message: `Active job post limit reached for your ${planName} plan (${limit} active jobs allowed). Please upgrade your plan to activate this job.`,
+        message: `Active job post limit reached for your company workspace (${limit} active jobs allowed on the ${planName} plan). Please upgrade your plan to activate this job.`,
         limit,
         activeCount,
         plan: planName,
@@ -161,7 +189,7 @@ router.patch("/:id", requireAuth, asyncHandler(async (req, res) => {
   res.json(result);
 }));
 
-// DELETE /api/jobs/:id - Delete job (Owner recruiter or Admin only)
+// DELETE /api/jobs/:id - Delete job (Company owner or Admin only)
 router.delete("/:id", requireAuth, asyncHandler(async (req, res) => {
   const _id = toObjectId(req.params.id);
   if (!_id) return badRequest(res, "Invalid job id");
@@ -171,14 +199,15 @@ router.delete("/:id", requireAuth, asyncHandler(async (req, res) => {
   if (!existingJob) return notFound(res, "Job not found");
 
   const isAdmin = (req.user.role || "").toLowerCase() === "admin";
-  const isOwner = existingJob.recruiterEmail?.toLowerCase() === req.user.email?.toLowerCase();
 
-  if (!isOwner) {
-    if (!isAdmin) {
+  if (!isAdmin) {
+    const access = await verifyVacancyAccess(req.user, existingJob, "delete");
+    if (!access.authorized) {
       return res.status(403).json({
-        message: "Forbidden: You can only delete jobs posted by your account.",
+        message: `Forbidden: ${access.reason}`,
       });
     }
+  } else {
     const { hasPermission, PERMISSIONS } = await import("../services/permissionService.js");
     if (!hasPermission(req.user, PERMISSIONS.MODERATION_JOBS)) {
       return res.status(403).json({
@@ -197,6 +226,7 @@ router.delete("/:id", requireAuth, asyncHandler(async (req, res) => {
       targetType: "job",
       targetId: existingJob._id.toString(),
       targetIdentifier: existingJob.title,
+      companyId: existingJob.companyId?.toString(),
       before: {
         title: existingJob.title,
         companyName: existingJob.companyName,
@@ -208,6 +238,25 @@ router.delete("/:id", requireAuth, asyncHandler(async (req, res) => {
   }
 
   res.status(204).send();
+}));
+
+// PATCH /api/jobs/:id/members - Assign/unassign team members to vacancy
+router.patch("/:id/members", requireAuth, asyncHandler(async (req, res) => {
+  const { memberEmails } = req.body;
+  if (!Array.isArray(memberEmails)) {
+    return badRequest(res, "memberEmails must be an array of email addresses.");
+  }
+
+  try {
+    const result = await assignVacancyMembers({
+      jobId: req.params.id,
+      memberEmails,
+      actorUser: req.user,
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
 }));
 
 export default router;

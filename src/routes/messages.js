@@ -14,6 +14,10 @@ import { badRequest, created, notFound } from "../utils/http.js";
 import { requireAuth } from "../middleware/auth.js";
 import { sseHub } from "../services/sseHub.js";
 import { createNotification } from "../services/notificationService.js";
+import {
+  verifyVacancyAccess,
+  getUserCompanyMemberships,
+} from "../services/companyWorkspaceService.js";
 
 const router = Router();
 
@@ -48,7 +52,29 @@ router.get("/conversations", requireAuth, asyncHandler(async (req, res) => {
 
   const filter = {};
   if (userRole === "recruiter") {
-    filter.recruiterEmail = new RegExp(`^${userEmail}$`, "i");
+    const memberships = await getUserCompanyMemberships(userEmail);
+    const companyIds = memberships.map((m) => m.companyId);
+
+    const candidateJobs = await db.collection("jobs").find({
+      $or: [
+        { companyId: { $in: companyIds } },
+        { recruiterEmail: new RegExp(`^${userEmail}$`, "i") },
+        { assignedMemberEmails: userEmail },
+      ],
+    }, { projection: { _id: 1, companyId: 1, recruiterEmail: 1, assignedMemberEmails: 1 } }).toArray();
+
+    const accessibleJobIds = [];
+    for (const j of candidateJobs) {
+      const access = await verifyVacancyAccess(req.user, j, "messaging");
+      if (access.authorized) {
+        accessibleJobIds.push(j._id.toString());
+      }
+    }
+
+    filter.$or = [
+      { jobId: { $in: accessibleJobIds } },
+      { recruiterEmail: new RegExp(`^${userEmail}$`, "i") },
+    ];
   } else {
     filter.seekerEmail = new RegExp(`^${userEmail}$`, "i");
   }
@@ -138,7 +164,17 @@ router.post("/conversations", requireAuth, asyncHandler(async (req, res) => {
   const isRecruiterOwner = application.recruiterEmail?.toLowerCase() === userEmail;
   const isSeekerOwner = application.seekerEmail?.toLowerCase() === userEmail;
 
-  if (!isRecruiterOwner && !isSeekerOwner) {
+  let isAuthorizedRecruiter = isRecruiterOwner;
+  if (!isAuthorizedRecruiter && !isSeekerOwner) {
+    const jobObjectId = toObjectId(application.jobId);
+    const job = jobObjectId ? await db.collection("jobs").findOne({ _id: jobObjectId }) : null;
+    if (job) {
+      const access = await verifyVacancyAccess(req.user, job, "messaging");
+      isAuthorizedRecruiter = access.authorized;
+    }
+  }
+
+  if (!isAuthorizedRecruiter && !isSeekerOwner) {
     return res.status(403).json({
       message: "Forbidden: You are not authorized to access conversations for this application.",
     });
@@ -209,11 +245,20 @@ router.get("/conversations/:id", requireAuth, asyncHandler(async (req, res) => {
   if (!conv) return notFound(res, "Conversation not found");
 
   const userEmail = req.user.email.toLowerCase().trim();
-  const isParticipant =
+  let isAuthorized =
     conv.recruiterEmail?.toLowerCase() === userEmail ||
     conv.seekerEmail?.toLowerCase() === userEmail;
 
-  if (!isParticipant) {
+  if (!isAuthorized) {
+    const jobObjectId = toObjectId(conv.jobId);
+    const job = jobObjectId ? await db.collection("jobs").findOne({ _id: jobObjectId }) : null;
+    if (job) {
+      const access = await verifyVacancyAccess(req.user, job, "messaging");
+      isAuthorized = access.authorized;
+    }
+  }
+
+  if (!isAuthorized) {
     return res.status(403).json({
       message: "Forbidden: You are not a participant in this conversation.",
     });
@@ -246,11 +291,20 @@ router.get("/conversations/:id/messages", requireAuth, asyncHandler(async (req, 
   if (!conv) return notFound(res, "Conversation not found");
 
   const userEmail = req.user.email.toLowerCase().trim();
-  const isParticipant =
+  let isAuthorized =
     conv.recruiterEmail?.toLowerCase() === userEmail ||
     conv.seekerEmail?.toLowerCase() === userEmail;
 
-  if (!isParticipant) {
+  if (!isAuthorized) {
+    const jobObjectId = toObjectId(conv.jobId);
+    const job = jobObjectId ? await db.collection("jobs").findOne({ _id: jobObjectId }) : null;
+    if (job) {
+      const access = await verifyVacancyAccess(req.user, job, "messaging");
+      isAuthorized = access.authorized;
+    }
+  }
+
+  if (!isAuthorized) {
     return res.status(403).json({
       message: "Forbidden: You are not authorized to view messages in this conversation.",
     });
@@ -299,10 +353,19 @@ router.post("/conversations/:id/messages", requireAuth, asyncHandler(async (req,
 
   const userEmail = req.user.email.toLowerCase().trim();
   const userRole = (req.user.role || "").toLowerCase();
-  const isRecruiter = conv.recruiterEmail?.toLowerCase() === userEmail;
   const isSeeker = conv.seekerEmail?.toLowerCase() === userEmail;
+  let isAuthorizedRecruiter = conv.recruiterEmail?.toLowerCase() === userEmail;
 
-  if (!isRecruiter && !isSeeker) {
+  if (!isAuthorizedRecruiter && !isSeeker) {
+    const jobObjectId = toObjectId(conv.jobId);
+    const job = jobObjectId ? await db.collection("jobs").findOne({ _id: jobObjectId }) : null;
+    if (job) {
+      const access = await verifyVacancyAccess(req.user, job, "messaging");
+      isAuthorizedRecruiter = access.authorized;
+    }
+  }
+
+  if (!isAuthorizedRecruiter && !isSeeker) {
     return res.status(403).json({
       message: "Forbidden: You are not an authorized participant in this conversation.",
     });

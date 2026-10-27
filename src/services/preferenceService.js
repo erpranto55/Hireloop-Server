@@ -63,6 +63,7 @@ export const ESSENTIAL_TEMPLATES = new Set([
   "paymentFailed", // Critical billing failure / service disruption notice
   "interviewCanceled", // Direct cancellation notice
   "accountSecurity", // Password reset, verification, suspension
+  "companyTeamInvitation", // Workspace invitation
 ]);
 
 /**

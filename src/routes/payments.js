@@ -162,6 +162,24 @@ router.post("/create-checkout-session", requireAuth, asyncHandler(async (req, re
   }
 
   const role = (user.role || "seeker").toLowerCase();
+
+  // Enforce company workspace billing protection: hiring managers and interviewers cannot modify billing
+  if (role === "recruiter") {
+    const nonOwnerMemberships = await db.collection("company_memberships").find({
+      userEmail: new RegExp(`^${user.email}$`, "i"),
+      status: "active",
+    }).toArray();
+
+    if (nonOwnerMemberships.length > 0) {
+      const isOwnerOfAny = nonOwnerMemberships.some((m) => m.role === "company_owner");
+      if (!isOwnerOfAny) {
+        return res.status(403).json({
+          message: "Forbidden: Only Company Owners are authorized to purchase or modify company subscriptions.",
+        });
+      }
+    }
+  }
+
   const plan = getPlanConfig(role, planName);
 
   if (!plan) {
@@ -362,6 +380,24 @@ router.post("/create-portal-session", requireAuth, asyncHandler(async (req, res)
   }
 
   const role = (user.role || "seeker").toLowerCase();
+
+  // Enforce company workspace billing protection: hiring managers and interviewers cannot access billing portal
+  if (role === "recruiter") {
+    const nonOwnerMemberships = await db.collection("company_memberships").find({
+      userEmail: new RegExp(`^${user.email}$`, "i"),
+      status: "active",
+    }).toArray();
+
+    if (nonOwnerMemberships.length > 0) {
+      const isOwnerOfAny = nonOwnerMemberships.some((m) => m.role === "company_owner");
+      if (!isOwnerOfAny) {
+        return res.status(403).json({
+          message: "Forbidden: Only Company Owners are authorized to access the billing management portal.",
+        });
+      }
+    }
+  }
+
   const returnUrl = `${config.clientOrigin}/dashboard/${role === "recruiter" ? "recruiter" : "seeker"}/billing`;
 
   const portalSession = await stripe.billingPortal.sessions.create({
