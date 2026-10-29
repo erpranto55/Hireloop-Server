@@ -347,6 +347,17 @@ router.patch("/:id/status", requireAuth, asyncHandler(async (req, res) => {
     invalidateInterviewReminders(_id, "canceled").catch(() => {});
   } else if (matchedStatus === "Completed") {
     invalidateInterviewReminders(_id, "completed").catch(() => {});
+    import("../services/pipelineAutomationService.js")
+      .then(({ evaluatePipelineAutomation, AUTOMATION_TRIGGERS }) => {
+        evaluatePipelineAutomation({
+          trigger: AUTOMATION_TRIGGERS.INTERVIEW_COMPLETED,
+          applicationId: interview.applicationId,
+          jobId: interview.jobId,
+          companyId: interview.companyId,
+          metadata: { interviewId: _id.toString() },
+        }).catch((err) => console.error("[Interviews] Automation trigger error:", err.message));
+      })
+      .catch(() => {});
   } else if (matchedStatus === "Confirmed") {
     scheduleInterviewReminders(updated).catch(() => {});
   }

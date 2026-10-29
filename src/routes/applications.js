@@ -43,6 +43,12 @@ function sanitizeApplicationForSeeker(app) {
   const sanitized = { ...app };
   delete sanitized.recruiterNotes;
   delete sanitized.notesHistory;
+  delete sanitized.reviewStatus;
+  delete sanitized.reviewStatusUpdatedAt;
+  delete sanitized.evaluationSummary;
+  delete sanitized.evaluations;
+  delete sanitized.scorecard;
+  delete sanitized.candidateReviewAssignments;
   return sanitized;
 }
 

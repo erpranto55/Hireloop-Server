@@ -511,6 +511,77 @@ export const emailTemplates = {
       }),
     };
   },
+
+  evaluationSubmitted({ recipientName, evaluatorName, candidateName, jobTitle, companyName, recommendation, viewUrl }) {
+    const formattedRec = (recommendation || "Completed")
+      .replace(/_/g, " ")
+      .replace(/\b\w/g, (c) => c.toUpperCase());
+    return {
+      subject: `New Candidate Evaluation Submitted: ${candidateName} (${jobTitle})`,
+      html: renderBaseTemplate({
+        title: "Evaluation Submitted",
+        preheader: `${evaluatorName} submitted a scorecard evaluation for ${candidateName}`,
+        bodyHtml: `
+          <p>Hello${recipientName ? ` ${recipientName}` : ""},</p>
+          <p><strong style="color: #ffffff;">${evaluatorName}</strong> has submitted an evaluation scorecard for <strong style="color: #ffffff;">${candidateName}</strong> applying for <strong style="color: #ffffff;">${jobTitle}</strong> at <strong style="color: #ffffff;">${companyName}</strong>.</p>
+          <div class="meta-box">
+            <div class="meta-row"><span class="meta-label">Candidate:</span><span class="meta-value">${candidateName}</span></div>
+            <div class="meta-row"><span class="meta-label">Evaluator:</span><span class="meta-value">${evaluatorName}</span></div>
+            <div class="meta-row"><span class="meta-label">Recommendation:</span><span class="meta-value" style="color: #818cf8;">${formattedRec}</span></div>
+          </div>
+          <p>You can review aggregated candidate ratings, criteria breakdown, and collaborative feedback in your recruiter dashboard.</p>
+        `,
+        ctaText: "View Candidate Evaluation",
+        ctaUrl: viewUrl || "/dashboard/recruiter",
+      }),
+    };
+  },
+
+  candidateReadyForDecision({ recipientName, candidateName, jobTitle, companyName, evaluationCount, averageScore, viewUrl }) {
+    return {
+      subject: `Candidate Ready for Decision: ${candidateName} (${jobTitle})`,
+      html: renderBaseTemplate({
+        title: "Candidate Ready for Decision",
+        preheader: `All required evaluations completed for ${candidateName}`,
+        bodyHtml: `
+          <p>Hello${recipientName ? ` ${recipientName}` : ""},</p>
+          <p><strong style="color: #ffffff;">${candidateName}</strong> has completed the evaluation cycle for <strong style="color: #ffffff;">${jobTitle}</strong> at <strong style="color: #ffffff;">${companyName}</strong> and is ready for your hiring decision review.</p>
+          <div class="meta-box">
+            <div class="meta-row"><span class="meta-label">Candidate:</span><span class="meta-value">${candidateName}</span></div>
+            <div class="meta-row"><span class="meta-label">Evaluations Completed:</span><span class="meta-value">${evaluationCount || "All required"}</span></div>
+            ${averageScore ? `<div class="meta-row"><span class="meta-label">Weighted Score:</span><span class="meta-value" style="color: #34d399; font-weight: 600;">${averageScore} / 5.0</span></div>` : ""}
+            <div class="meta-row"><span class="meta-label">Workflow Status:</span><span class="meta-value" style="color: #818cf8;">Ready for Decision</span></div>
+          </div>
+          <p>Collaborative interview feedback and criteria scores are ready for final review.</p>
+        `,
+        ctaText: "Review Candidate",
+        ctaUrl: viewUrl || "/dashboard/recruiter",
+      }),
+    };
+  },
+
+  pipelineAutomationTriggered({ recipientName, ruleName, candidateName, jobTitle, fromStatus, toStatus, actionName, viewUrl }) {
+    return {
+      subject: `Pipeline Automation: ${ruleName} (${jobTitle})`,
+      html: renderBaseTemplate({
+        title: "Pipeline Automation Executed",
+        preheader: `Automated action "${actionName}" applied for ${candidateName}`,
+        bodyHtml: `
+          <p>Hello${recipientName ? ` ${recipientName}` : ""},</p>
+          <p>Recruitment pipeline rule <strong style="color: #ffffff;">"${ruleName}"</strong> was triggered for <strong style="color: #ffffff;">${candidateName}</strong>.</p>
+          <div class="meta-box">
+            <div class="meta-row"><span class="meta-label">Candidate:</span><span class="meta-value">${candidateName}</span></div>
+            <div class="meta-row"><span class="meta-label">Position:</span><span class="meta-value">${jobTitle}</span></div>
+            <div class="meta-row"><span class="meta-label">Action:</span><span class="meta-value" style="color: #818cf8;">${actionName}</span></div>
+            ${fromStatus && toStatus ? `<div class="meta-row"><span class="meta-label">Stage Progression:</span><span class="meta-value">${fromStatus} &rarr; <span style="color: #34d399;">${toStatus}</span></span></div>` : ""}
+          </div>
+          <p>Full audit records and status history have been updated in your dashboard.</p>
+        `,
+        ctaText: "View Pipeline Status",
+        ctaUrl: viewUrl || "/dashboard/recruiter",
+      }),
+    };
+  },
 };
 
 /**

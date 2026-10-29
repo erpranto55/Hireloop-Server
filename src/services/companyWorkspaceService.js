@@ -246,6 +246,8 @@ export async function verifyVacancyAccess(user, job, capability = "view") {
       "internal_notes",
       "participate_interviews",
       "messaging",
+      "submit_evaluation",
+      "view_evaluations",
     ];
 
     if (!readOrParticipateCaps.includes(capability)) {

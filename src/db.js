@@ -76,6 +76,17 @@ export async function connectToDatabase() {
     db.collection("jobs").createIndex({ companyId: 1, status: 1 }),
     db.collection("jobs").createIndex({ assignedMemberEmails: 1 }),
     db.collection("audit_logs").createIndex({ companyId: 1, timestamp: -1 }),
+    db.collection("scorecard_templates").createIndex({ companyId: 1, isActive: 1 }),
+    db.collection("scorecard_templates").createIndex({ companyId: 1, jobId: 1, isActive: 1 }),
+    db.collection("evaluations").createIndex({ applicationId: 1, evaluatorEmail: 1 }),
+    db.collection("evaluations").createIndex({ applicationId: 1, status: 1 }),
+    db.collection("evaluations").createIndex({ jobId: 1 }),
+    db.collection("evaluations").createIndex({ companyId: 1 }),
+    db.collection("pipeline_automation_rules").createIndex({ companyId: 1, isEnabled: 1 }),
+    db.collection("pipeline_automation_rules").createIndex({ companyId: 1, trigger: 1, isEnabled: 1 }),
+    db.collection("automation_execution_logs").createIndex({ idempotencyKey: 1 }, { unique: true, sparse: true }),
+    db.collection("automation_execution_logs").createIndex({ companyId: 1, claimedAt: -1 }),
+    db.collection("automation_execution_logs").createIndex({ applicationId: 1 }),
   ]);
 
   // Ensure legacy admins have canonical adminRole
