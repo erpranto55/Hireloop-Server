@@ -38,7 +38,7 @@ export const ALLOWED_STATUS_TRANSITIONS = {
 /**
  * Strips private recruiter notes and internal review data from seeker responses.
  */
-function sanitizeApplicationForSeeker(app) {
+export function sanitizeApplicationForSeeker(app) {
   if (!app) return app;
   const sanitized = { ...app };
   delete sanitized.recruiterNotes;

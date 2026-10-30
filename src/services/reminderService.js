@@ -71,9 +71,14 @@ export async function scheduleInterviewRemindersForRecipient(interview, recipien
 
   const isSeeker = normalizedEmail === (interview.seekerEmail || "").toLowerCase().trim();
   const role = isSeeker ? "seeker" : "recruiter";
-  const name = isSeeker ? (interview.seekerName || "Candidate") : (interview.recruiterName || "Recruiter");
+  const panelInterviewer = Array.isArray(interview.interviewers)
+    ? interview.interviewers.find((i) => i.email?.toLowerCase().trim() === normalizedEmail)
+    : null;
+  const name = isSeeker
+    ? (interview.seekerName || "Candidate")
+    : (panelInterviewer?.name || interview.recruiterName || "Interviewer");
   const otherName = isSeeker
-    ? (interview.companyName || interview.recruiterName || "Recruiter")
+    ? (interview.companyName || interview.recruiterName || "Hiring Team")
     : (interview.seekerName || "Candidate");
 
   const deadlines = calculateReminderDeadlines(interviewDate, leadTimes);
@@ -156,10 +161,19 @@ export async function scheduleInterviewReminders(interview) {
     return [];
   }
 
-  const recipients = [
-    interview.seekerEmail,
-    interview.recruiterEmail,
-  ].filter(Boolean);
+  const recipientSet = new Set();
+  if (interview.seekerEmail) recipientSet.add(interview.seekerEmail.toLowerCase().trim());
+  if (interview.recruiterEmail) recipientSet.add(interview.recruiterEmail.toLowerCase().trim());
+
+  if (Array.isArray(interview.interviewers)) {
+    for (const member of interview.interviewers) {
+      if (member.email && member.responseStatus !== "Declined" && member.responseStatus !== "Removed") {
+        recipientSet.add(member.email.toLowerCase().trim());
+      }
+    }
+  }
+
+  const recipients = Array.from(recipientSet);
 
   const scheduledDocs = [];
 

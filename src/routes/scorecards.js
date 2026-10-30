@@ -16,6 +16,7 @@ import {
   submitEvaluation,
   amendEvaluation,
   getApplicationEvaluationSummary,
+  getPanelDebriefSummary,
 } from "../services/scorecardService.js";
 import {
   verifyCompanyAccess,
@@ -121,6 +122,18 @@ router.get("/applications/:applicationId/summary", requireAuth, asyncHandler(asy
 
   const summary = await getApplicationEvaluationSummary(applicationId, req.user);
   res.json(summary);
+}));
+
+// GET /api/scorecards/interviews/:interviewId/debrief - Consolidated panel debrief
+router.get("/interviews/:interviewId/debrief", requireAuth, asyncHandler(async (req, res) => {
+  const { interviewId } = req.params;
+  const userRole = (req.user.role || "").toLowerCase();
+  if (userRole === "seeker") {
+    return res.status(403).json({ message: "Forbidden: Candidates cannot access panel debriefs." });
+  }
+
+  const debrief = await getPanelDebriefSummary(interviewId, req.user);
+  res.json(debrief);
 }));
 
 // GET /api/scorecards/applications/:applicationId/mine - Get caller's own evaluation (draft or submitted)

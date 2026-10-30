@@ -100,7 +100,7 @@ router.post(
 );
 
 // Shared authorization check for resume streaming and parsed data
-async function isUserAuthorizedForResume(db, fileId, userEmail, userRole) {
+async function isUserAuthorizedForResume(db, fileId, user, userEmail, userRole) {
   if (userRole === "admin") return true;
 
   // 1. Check direct uploader
@@ -119,7 +119,7 @@ async function isUserAuthorizedForResume(db, fileId, userEmail, userRole) {
   });
   if (seekerApp) return true;
 
-  // 3. Check recruiter applications
+  // 3. Check recruiter applications & company vacancy access
   if (userRole === "recruiter") {
     const recruiterApp = await db.collection("applications").findOne({
       recruiterEmail: new RegExp(`^${userEmail}$`, "i"),
@@ -129,6 +129,28 @@ async function isUserAuthorizedForResume(db, fileId, userEmail, userRole) {
       ],
     });
     if (recruiterApp) return true;
+
+    // Check company workspace team access via vacancy authorization
+    const anyApp = await db.collection("applications").findOne({
+      $or: [
+        { resumeUrl: { $regex: fileId, $options: "i" } },
+        { resumeFileId: fileId },
+      ],
+    });
+    if (anyApp?.jobId) {
+      try {
+        const { toObjectId } = await import("../db.js");
+        const { verifyVacancyAccess } = await import("../services/companyWorkspaceService.js");
+        const jobObjectId = toObjectId(anyApp.jobId);
+        const job = jobObjectId ? await db.collection("jobs").findOne({ _id: jobObjectId }) : null;
+        if (job) {
+          const access = await verifyVacancyAccess(user, job, "view");
+          if (access.authorized) return true;
+        }
+      } catch {
+        // Fallback safely if companyWorkspaceService fails
+      }
+    }
   }
 
   return false;
@@ -152,7 +174,7 @@ router.get("/:fileId", requireAuth, asyncHandler(async (req, res) => {
   const userRole = (req.user.role || "").toLowerCase();
   const db = getDb();
 
-  const isAuthorized = await isUserAuthorizedForResume(db, fileId, userEmail, userRole);
+  const isAuthorized = await isUserAuthorizedForResume(db, fileId, req.user, userEmail, userRole);
   if (!isAuthorized) {
     return res.status(403).json({
       message: "Forbidden: You are not authorized to view this candidate resume.",
@@ -179,7 +201,7 @@ router.post("/:fileId/parse", requireAuth, asyncHandler(async (req, res) => {
   const userRole = (req.user.role || "").toLowerCase();
   const db = getDb();
 
-  const isAuthorized = await isUserAuthorizedForResume(db, fileId, userEmail, userRole);
+  const isAuthorized = await isUserAuthorizedForResume(db, fileId, req.user, userEmail, userRole);
   if (!isAuthorized) {
     return res.status(403).json({
       message: "Forbidden: You are not authorized to parse this resume.",
@@ -207,7 +229,7 @@ router.get("/:fileId/parsed", requireAuth, asyncHandler(async (req, res) => {
   const userRole = (req.user.role || "").toLowerCase();
   const db = getDb();
 
-  const isAuthorized = await isUserAuthorizedForResume(db, fileId, userEmail, userRole);
+  const isAuthorized = await isUserAuthorizedForResume(db, fileId, req.user, userEmail, userRole);
   if (!isAuthorized) {
     return res.status(403).json({
       message: "Forbidden: You are not authorized to access parsed data for this resume.",

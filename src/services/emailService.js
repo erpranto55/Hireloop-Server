@@ -311,6 +311,80 @@ export const emailTemplates = {
     };
   },
 
+  panelInterviewInvitation({ recipientName, candidateName, jobTitle, companyName, scheduledAt, durationMinutes, timezone, format, location, roleName = "Panelist", panelMembers = [], calendarUrl, viewUrl }) {
+    const membersList = panelMembers.length > 0 ? panelMembers.join(", ") : "Hiring Team";
+    return {
+      subject: `Panel Interview Invitation: ${candidateName} for ${jobTitle}`,
+      html: renderBaseTemplate({
+        title: "Panel Interview Scheduled",
+        preheader: `You have been assigned to an interview panel for ${candidateName} (${jobTitle})`,
+        bodyHtml: `
+          <p>Hello${recipientName ? ` ${recipientName}` : ""},</p>
+          <p>You have been assigned as <strong style="color: #818cf8;">${roleName}</strong> on the interview panel for <strong style="color: #ffffff;">${candidateName}</strong> applying for <strong style="color: #ffffff;">${jobTitle}</strong> at <strong style="color: #ffffff;">${companyName}</strong>.</p>
+          <div class="meta-box">
+            <div class="meta-row"><span class="meta-label">Candidate:</span><span class="meta-value">${candidateName}</span></div>
+            <div class="meta-row"><span class="meta-label">Position:</span><span class="meta-value">${jobTitle}</span></div>
+            <div class="meta-row"><span class="meta-label">Date & Time:</span><span class="meta-value" style="color: #34d399; font-weight: 600;">${scheduledAt} (${timezone || "UTC"})</span></div>
+            <div class="meta-row"><span class="meta-label">Duration:</span><span class="meta-value">${durationMinutes || 45} minutes</span></div>
+            <div class="meta-row"><span class="meta-label">Format:</span><span class="meta-value" style="text-transform: capitalize;">${format || "Video Call"}</span></div>
+            ${location ? `<div class="meta-row"><span class="meta-label">Location / Link:</span><span class="meta-value">${location}</span></div>` : ""}
+            <div class="meta-row"><span class="meta-label">Panel Team:</span><span class="meta-value">${membersList}</span></div>
+          </div>
+          <p>Please confirm your participation or indicate any schedule conflicts in your recruiter workspace.</p>
+          ${calendarUrl ? `<p><a href="${calendarUrl}" style="color: #818cf8; text-decoration: underline; font-size: 13px;">Add to Google Calendar</a></p>` : ""}
+        `,
+        ctaText: "View Panel Details & Respond",
+        ctaUrl: viewUrl || "/dashboard/recruiter",
+      }),
+    };
+  },
+
+  panelParticipantResponded({ recipientName, panelistName, candidateName, jobTitle, responseStatus, reason, viewUrl }) {
+    const isAccepted = responseStatus === "Accepted";
+    return {
+      subject: `Panel Response: ${panelistName} (${responseStatus}) - ${candidateName}`,
+      html: renderBaseTemplate({
+        title: "Interviewer Response Received",
+        preheader: `${panelistName} responded "${responseStatus}" to the panel interview for ${candidateName}`,
+        bodyHtml: `
+          <p>Hello${recipientName ? ` ${recipientName}` : ""},</p>
+          <p><strong style="color: #ffffff;">${panelistName}</strong> has responded to the panel interview invitation for <strong style="color: #ffffff;">${candidateName}</strong> (${jobTitle}):</p>
+          <div class="meta-box">
+            <div class="meta-row"><span class="meta-label">Interviewer:</span><span class="meta-value">${panelistName}</span></div>
+            <div class="meta-row"><span class="meta-label">Candidate:</span><span class="meta-value">${candidateName}</span></div>
+            <div class="meta-row"><span class="meta-label">Response:</span><span class="meta-value" style="color: ${isAccepted ? "#34d399" : "#f87171"}; font-weight: 600;">${responseStatus}</span></div>
+            ${reason ? `<div class="meta-row"><span class="meta-label">Reason / Notes:</span><span class="meta-value">${reason}</span></div>` : ""}
+          </div>
+          <p>Access your coordination calendar to review panel coverage or assign alternate interviewers if needed.</p>
+        `,
+        ctaText: "Manage Panel Interview",
+        ctaUrl: viewUrl || "/dashboard/recruiter",
+      }),
+    };
+  },
+
+  panelDebriefReady({ recipientName, candidateName, jobTitle, companyName, completedScorecards, totalPanelists, averageScore, viewUrl }) {
+    return {
+      subject: `Panel Debrief Ready: ${candidateName} (${jobTitle})`,
+      html: renderBaseTemplate({
+        title: "Panel Debrief Ready",
+        preheader: `All scorecards submitted for ${candidateName} panel interview`,
+        bodyHtml: `
+          <p>Hello${recipientName ? ` ${recipientName}` : ""},</p>
+          <p>The interview panel for <strong style="color: #ffffff;">${candidateName}</strong> on <strong style="color: #ffffff;">${jobTitle}</strong> at <strong style="color: #ffffff;">${companyName}</strong> has completed their evaluation scorecards.</p>
+          <div class="meta-box">
+            <div class="meta-row"><span class="meta-label">Candidate:</span><span class="meta-value">${candidateName}</span></div>
+            <div class="meta-row"><span class="meta-label">Evaluations Completed:</span><span class="meta-value">${completedScorecards} of ${totalPanelists} submitted</span></div>
+            ${averageScore ? `<div class="meta-row"><span class="meta-label">Aggregate Score:</span><span class="meta-value" style="color: #34d399; font-weight: 600;">${averageScore} / 5.0</span></div>` : ""}
+          </div>
+          <p>Consolidated feedback, criteria breakdown, and collaborative notes are ready for final hiring decision review.</p>
+        `,
+        ctaText: "Open Panel Debrief",
+        ctaUrl: viewUrl || "/dashboard/recruiter",
+      }),
+    };
+  },
+
   interviewInvitation({ jobTitle, companyName, scheduledAt, durationMinutes, timezone, format, location, agenda, calendarUrl, viewUrl }) {
     return {
       subject: `Interview Invitation: ${jobTitle} at ${companyName}`,

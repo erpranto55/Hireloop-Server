@@ -203,6 +203,10 @@ export async function verifyVacancyAccess(user, job, capability = "view") {
   const userEmail = user.email.toLowerCase().trim();
   const companyId = job.companyId?.toString();
 
+  if (user.companyId && companyId && user.companyId.toString() !== companyId) {
+    return { authorized: false, reason: "User does not belong to this company workspace" };
+  }
+
   const isCreator = job.recruiterEmail?.toLowerCase() === userEmail;
 
   let companyRole = user.companyRole;

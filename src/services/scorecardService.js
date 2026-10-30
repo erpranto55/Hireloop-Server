@@ -436,6 +436,18 @@ export async function submitEvaluation({
     throw new Error(`Forbidden: ${access.reason}`);
   }
 
+  // If linked to an interview, verify participant eligibility
+  if (interviewId) {
+    const interviewObjId = toObjectId(interviewId);
+    const interview = interviewObjId ? await db.collection("interviews").findOne({ _id: interviewObjId }) : null;
+    if (interview && Array.isArray(interview.interviewers) && interview.interviewers.length > 0) {
+      const participant = interview.interviewers.find((i) => i.email?.toLowerCase().trim() === evaluatorEmail);
+      if (participant && (participant.responseStatus === "Declined" || participant.responseStatus === "Removed")) {
+        throw new Error(`Cannot submit evaluation: You have ${participant.responseStatus.toLowerCase()} this interview panel.`);
+      }
+    }
+  }
+
   // Get active template
   const template = await getOrCreateDefaultTemplate(companyId || application.companyId, jobId, user);
 
@@ -799,5 +811,91 @@ export async function getApplicationEvaluationSummary(applicationId, user) {
     missingEvaluators,
     evaluations: sanitizedEvaluations,
     currentReviewStatus: application.reviewStatus || "pending",
+  };
+}
+
+/**
+ * Retrieves consolidated panel interview debrief data.
+ * Merges panel participant statuses, evaluation completion states,
+ * and collaborative scorecard summary.
+ */
+export async function getPanelDebriefSummary(interviewId, user) {
+  if (!user) throw new Error("Authentication required.");
+
+  const userRole = (user.role || "").toLowerCase();
+  if (userRole === "seeker") {
+    throw new Error("Forbidden: Candidate scorecards and debriefs are restricted.");
+  }
+
+  const _id = toObjectId(interviewId);
+  if (!_id) throw new Error("Invalid interview ID");
+
+  const db = getDb();
+  const interview = await db.collection("interviews").findOne({ _id });
+  if (!interview) throw new Error("Interview appointment not found.");
+
+  // Check vacancy access
+  const jobObjectId = toObjectId(interview.jobId);
+  const job = jobObjectId ? await db.collection("jobs").findOne({ _id: jobObjectId }) : null;
+
+  if (userRole !== "admin" && job) {
+    const access = await verifyVacancyAccess(user, job, "view_evaluations");
+    if (!access.authorized) {
+      throw new Error(`Forbidden: ${access.reason}`);
+    }
+  }
+
+  // Get application evaluation summary
+  const summary = await getApplicationEvaluationSummary(interview.applicationId, user);
+
+  // Panelists tracking
+  const interviewers = Array.isArray(interview.interviewers) && interview.interviewers.length > 0
+    ? interview.interviewers
+    : [
+        {
+          email: interview.recruiterEmail,
+          name: interview.recruiterName || "Recruiter",
+          role: "lead_interviewer",
+          responseStatus: "Accepted",
+        },
+      ];
+
+  const evaluatedEmails = new Set(
+    (summary.evaluations || [])
+      .filter((e) => e.status === "submitted")
+      .map((e) => e.evaluatorEmail?.toLowerCase())
+  );
+
+  const panelistStatus = interviewers.map((p) => ({
+    email: p.email,
+    name: p.name || p.email,
+    role: p.role || "panelist",
+    responseStatus: p.responseStatus || "Pending",
+    respondedAt: p.respondedAt || null,
+    hasEvaluated: evaluatedEmails.has(p.email.toLowerCase()),
+  }));
+
+  const pendingEvaluators = panelistStatus.filter(
+    (p) => !p.hasEvaluated && p.responseStatus !== "Declined" && p.responseStatus !== "Removed"
+  );
+
+  return {
+    interviewId: interview._id.toString(),
+    jobTitle: interview.jobTitle,
+    companyName: interview.companyName,
+    interviewType: interview.interviewType || (interviewers.length > 1 ? "panel" : "single"),
+    status: interview.status,
+    scheduledAt: interview.scheduledAt,
+    durationMinutes: interview.durationMinutes,
+    format: interview.format,
+    location: interview.location,
+    candidate: {
+      name: interview.seekerName || "Candidate",
+      email: interview.seekerEmail,
+    },
+    panelists: panelistStatus,
+    pendingEvaluators,
+    debriefReady: pendingEvaluators.length === 0 && summary.submittedEvaluationsCount > 0,
+    summary,
   };
 }

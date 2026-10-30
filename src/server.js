@@ -21,6 +21,7 @@ import adminsRouter from "./routes/admins.js";
 import teamRouter from "./routes/team.js";
 import scorecardsRouter from "./routes/scorecards.js";
 import automationRouter from "./routes/automation.js";
+import availabilityRouter from "./routes/availability.js";
 import { startScheduler, stopScheduler } from "./services/scheduler.js";
 
 import { rateLimiter } from "./middleware/rateLimiter.js";
@@ -86,6 +87,7 @@ app.use("/api/admin/admins", adminsRouter);
 app.use("/api/team", teamRouter);
 app.use("/api/scorecards", scorecardsRouter);
 app.use("/api/automation", automationRouter);
+app.use("/api/availability", availabilityRouter);
 
 app.use((req, res) => {
   res.status(404).json({ message: `Route ${req.method} ${req.originalUrl} not found` });
