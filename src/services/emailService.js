@@ -830,17 +830,63 @@ export async function queueTransactionalEmail({
 
 /**
  * Delivers a single outbox record with retry, re-checking preferences right before sending.
+ * Uses atomic lease locking to guarantee mutual exclusion and prevent duplicate sends across workers.
  */
-export async function deliverOutboxItem(outboxId) {
-  const db = getDb();
-  const item = await db.collection("email_outbox").findOne({ _id: outboxId });
-  if (!item || item.status === "sent" || item.status === "suppressed") return item;
+export async function deliverOutboxItem(outboxId, workerId = null) {
+  let db;
+  try {
+    db = getDb();
+  } catch {
+    return null;
+  }
+
+  const claimId = workerId || `worker_${process.pid}_${Math.random().toString(36).substring(2, 7)}`;
+  const now = new Date();
+  const LEASE_TIMEOUT_MS = 5 * 60 * 1000;
+
+  // Atomically claim the outbox record:
+  // Must be pending and eligible, or already claimed by this workerId, or stale processing whose lease expired
+  const claimedItem = await db.collection("email_outbox").findOneAndUpdate(
+    {
+      _id: outboxId,
+      $or: [
+        {
+          status: "pending",
+          $or: [{ nextAttemptAt: null }, { nextAttemptAt: { $lte: now } }],
+        },
+        {
+          status: "processing",
+          lockedBy: claimId,
+        },
+        {
+          status: "processing",
+          lockedAt: { $lte: new Date(now.getTime() - LEASE_TIMEOUT_MS) },
+        },
+      ],
+    },
+    {
+      $set: {
+        status: "processing",
+        lockedAt: now,
+        lockedBy: claimId,
+        updatedAt: now,
+      },
+    },
+    { returnDocument: "after" }
+  );
+
+  if (!claimedItem) {
+    // Either already completed/suppressed or actively claimed by another worker
+    return null;
+  }
+
+  const item = claimedItem;
 
   // Re-check preference right before provider delivery (prevent stale send if preference changed while queued)
   const preferenceCheck = await shouldDeliverEmail(item.to, item.type);
   if (!preferenceCheck.deliver) {
     await db.collection("email_outbox").updateOne(
-      { _id: item._id },
+      { _id: item._id, lockedBy: claimId },
       {
         $set: {
           status: "suppressed",
@@ -870,7 +916,7 @@ export async function deliverOutboxItem(outboxId) {
     });
 
     await db.collection("email_outbox").updateOne(
-      { _id: item._id },
+      { _id: item._id, lockedBy: claimId },
       {
         $set: {
           status: "sent",
@@ -886,11 +932,11 @@ export async function deliverOutboxItem(outboxId) {
 
     return { ...item, status: "sent", messageId: result.messageId };
   } catch (err) {
-    const nextAttempt = item.attempts + 1;
-    const isExhausted = nextAttempt >= item.maxAttempts;
+    const nextAttempt = (item.attempts || 0) + 1;
+    const isExhausted = nextAttempt >= (item.maxAttempts || 3);
 
     await db.collection("email_outbox").updateOne(
-      { _id: item._id },
+      { _id: item._id, lockedBy: claimId },
       {
         $set: {
           status: isExhausted ? "failed" : "pending",

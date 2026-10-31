@@ -1,7 +1,7 @@
 import express from "express";
 import cors from "cors";
 import { assertConfig, config } from "./config.js";
-import { closeDatabase, connectToDatabase } from "./db.js";
+import { closeDatabase, connectToDatabase, pingDatabase } from "./db.js";
 import applicationsRouter from "./routes/applications.js";
 import companiesRouter from "./routes/companies.js";
 import jobsRouter from "./routes/jobs.js";
@@ -22,7 +22,8 @@ import teamRouter from "./routes/team.js";
 import scorecardsRouter from "./routes/scorecards.js";
 import automationRouter from "./routes/automation.js";
 import availabilityRouter from "./routes/availability.js";
-import { startScheduler, stopScheduler } from "./services/scheduler.js";
+import { startScheduler, stopScheduler, getSchedulerStatus } from "./services/scheduler.js";
+import { stopOutboxWorker, getOutboxWorkerStatus } from "./services/outboxWorker.js";
 
 import { rateLimiter } from "./middleware/rateLimiter.js";
 
@@ -32,6 +33,7 @@ const app = express();
 let server;
 
 app.disable("x-powered-by");
+app.set("trust proxy", 1);
 
 app.use(cors({
   origin: config.clientOrigin,
@@ -58,12 +60,58 @@ app.get("/", (_req, res) => {
   });
 });
 
+/**
+ * Fast liveness probe for load balancers.
+ */
 app.get("/health", async (_req, res, next) => {
   try {
     await connectToDatabase();
-    res.json({ status: "ok", database: "connected" });
+    res.json({
+      status: "ok",
+      database: "connected",
+      environment: config.nodeEnv,
+      uptimeSeconds: Math.floor(process.uptime()),
+    });
   } catch (error) {
     next(error);
+  }
+});
+
+/**
+ * Deep readiness probe for staging and production container orchestrators.
+ * Verifies active database ping and background worker state.
+ */
+app.get(["/ready", "/health/ready"], async (_req, res) => {
+  try {
+    const dbPingMs = await pingDatabase();
+    const schedulerStatus = getSchedulerStatus();
+    const outboxStatus = getOutboxWorkerStatus();
+
+    const isReady = dbPingMs >= 0;
+
+    const payload = {
+      status: isReady ? "ready" : "not_ready",
+      database: {
+        status: "connected",
+        latencyMs: dbPingMs,
+      },
+      scheduler: {
+        active: schedulerStatus.isRunning,
+        lastCycleAt: schedulerStatus.lastCycleTime,
+      },
+      outboxWorker: {
+        active: outboxStatus.isRunning,
+      },
+      environment: config.nodeEnv,
+      uptimeSeconds: Math.floor(process.uptime()),
+    };
+
+    res.status(isReady ? 200 : 503).json(payload);
+  } catch (err) {
+    res.status(503).json({
+      status: "unhealthy",
+      error: config.nodeEnv === "production" ? "Database connectivity failed" : err.message,
+    });
   }
 });
 
@@ -134,14 +182,27 @@ async function startServer() {
 }
 
 async function shutdown() {
+  console.log("[Server] Graceful shutdown initiated...");
   stopScheduler();
+  stopOutboxWorker();
+
+  const forceExitTimeout = setTimeout(async () => {
+    console.warn("[Server] Forceful exit triggered after 10s shutdown timeout");
+    await closeDatabase().catch(() => {});
+    process.exit(1);
+  }, 10000);
+  if (forceExitTimeout.unref) forceExitTimeout.unref();
+
   if (!server) {
     await closeDatabase();
+    clearTimeout(forceExitTimeout);
     process.exit(0);
   }
 
   server.close(async () => {
     await closeDatabase();
+    clearTimeout(forceExitTimeout);
+    console.log("[Server] Graceful shutdown complete.");
     process.exit(0);
   });
 }

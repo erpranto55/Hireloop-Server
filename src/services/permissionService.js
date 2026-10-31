@@ -191,12 +191,12 @@ export async function validateSuperAdminLockout({ targetEmail, nextRole, nextAdm
     return { allowed: true };
   }
 
-  // Count other active super admins
+  // Count other active super admins (explicitly matching canonical super_admin role)
   const otherSuperAdminsCount = await db.collection("user").countDocuments({
     email: { $not: new RegExp(`^${normalizedEmail}$`, "i") },
     role: "admin",
     status: { $ne: "suspended" },
-    $or: [{ adminRole: ADMIN_ROLES.SUPER_ADMIN }, { adminRole: { $exists: false } }, { adminRole: null }],
+    adminRole: ADMIN_ROLES.SUPER_ADMIN,
   });
 
   if (otherSuperAdminsCount < 1) {

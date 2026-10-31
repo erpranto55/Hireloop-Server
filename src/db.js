@@ -111,32 +111,43 @@ export async function connectToDatabase() {
     console.error("Company membership migration warning:", err.message);
   }
 
-  // Seed companies
-  const companiesCount = await db.collection("companies").countDocuments();
-  if (companiesCount === 0) {
-    console.log("Seeding companies database...");
-    await db.collection("companies").insertMany(seedCompanies);
-  }
+  // Seed demo data only in non-production environments when database is fresh
+  if (config.nodeEnv !== "production") {
+    const companiesCount = await db.collection("companies").countDocuments();
+    if (companiesCount === 0) {
+      console.log("Seeding demo companies database...");
+      await db.collection("companies").insertMany(seedCompanies);
+    }
 
-  // Seed jobs
-  const jobsCount = await db.collection("jobs").countDocuments();
-  if (jobsCount === 0) {
-    console.log("Seeding jobs database...");
-    const dbCompanies = await db.collection("companies").find().toArray();
-    const companyMap = {};
-    dbCompanies.forEach((c) => {
-      companyMap[c.name.toLowerCase()] = c._id.toString();
-    });
+    const jobsCount = await db.collection("jobs").countDocuments();
+    if (jobsCount === 0) {
+      console.log("Seeding demo jobs database...");
+      const dbCompanies = await db.collection("companies").find().toArray();
+      const companyMap = {};
+      dbCompanies.forEach((c) => {
+        companyMap[c.name.toLowerCase()] = c._id.toString();
+      });
 
-    const jobsWithCompanyIds = seedJobs.map((job) => ({
-      ...job,
-      companyId: companyMap[job.companyName.toLowerCase()] || "unknown",
-    }));
+      const jobsWithCompanyIds = seedJobs.map((job) => ({
+        ...job,
+        companyId: companyMap[job.companyName.toLowerCase()] || "unknown",
+      }));
 
-    await db.collection("jobs").insertMany(jobsWithCompanyIds);
+      await db.collection("jobs").insertMany(jobsWithCompanyIds);
+    }
   }
 
   return db;
+}
+
+/**
+ * Pings MongoDB and returns response latency in milliseconds.
+ */
+export async function pingDatabase() {
+  if (!db) await connectToDatabase();
+  const startTime = Date.now();
+  await db.command({ ping: 1 });
+  return Date.now() - startTime;
 }
 
 export function getDb() {

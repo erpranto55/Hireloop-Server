@@ -65,7 +65,7 @@ export async function processPendingOutbox(limit = BATCH_SIZE) {
     }
 
     try {
-      await deliverOutboxItem(claimed._id);
+      await deliverOutboxItem(claimed._id, WORKER_ID);
       processedCount++;
     } catch (err) {
       // deliverOutboxItem handles failure updating status to failed / pending with exponential backoff
@@ -74,6 +74,17 @@ export async function processPendingOutbox(limit = BATCH_SIZE) {
   }
 
   return processedCount;
+}
+
+/**
+ * Returns current health and diagnostic status of the outbox worker.
+ */
+export function getOutboxWorkerStatus() {
+  return {
+    isRunning: Boolean(workerInterval),
+    workerId: WORKER_ID,
+    isProcessing,
+  };
 }
 
 /**

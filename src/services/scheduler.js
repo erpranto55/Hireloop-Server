@@ -10,6 +10,8 @@ import { processPendingOutbox } from "./outboxWorker.js";
 
 let schedulerInterval = null;
 let isCycleRunning = false;
+let lastCycleTime = null;
+let lastCycleResults = null;
 
 /**
  * Executes a single complete scheduler cycle.
@@ -53,6 +55,8 @@ export async function runSchedulerCycle() {
     }
   } finally {
     isCycleRunning = false;
+    lastCycleTime = new Date();
+    lastCycleResults = results;
   }
 
   return results;
@@ -93,4 +97,16 @@ export function stopScheduler() {
     schedulerInterval = null;
     console.log("[Scheduler] Background scheduler stopped.");
   }
+}
+
+/**
+ * Returns current health and diagnostic status of the unified scheduler.
+ */
+export function getSchedulerStatus() {
+  return {
+    isRunning: Boolean(schedulerInterval),
+    isCycleRunning,
+    lastCycleTime,
+    lastResults: lastCycleResults,
+  };
 }

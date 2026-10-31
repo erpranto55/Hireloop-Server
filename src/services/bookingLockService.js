@@ -2,6 +2,9 @@
  * Distributed Atomic Booking Lock Service for HireLoop
  * Guarantees mutual exclusion and prevents concurrent double-booking of
  * candidates and interviewers across multiple server instances and simultaneous requests.
+ *
+ * Includes background heartbeat lease renewal and fencing token assertion to prevent
+ * delayed workers from persisting changes after lease loss.
  */
 
 import crypto from "node:crypto";
@@ -138,7 +141,114 @@ export async function acquireBookingLocks(
 }
 
 /**
- * Releases all locks associated with a lockToken.
+ * Renews the lease for all specified lock keys belonging to lockToken.
+ * Returns { renewed: boolean, lostCount: number }.
+ */
+export async function renewBookingLocks(lockToken, lockKeys = [], timeoutMs = DEFAULT_LOCK_TIMEOUT_MS) {
+  if (!lockToken || !lockKeys || lockKeys.length === 0) {
+    return { renewed: true, lostCount: 0 };
+  }
+
+  let db = null;
+  try {
+    db = getDb();
+  } catch {
+    // DB not available
+  }
+
+  const now = new Date();
+  const newExpiresAt = new Date(now.getTime() + timeoutMs);
+
+  if (db && typeof db.collection === "function") {
+    try {
+      const result = await db.collection("scheduling_locks").updateMany(
+        {
+          lockToken,
+          lockKey: { $in: lockKeys },
+          expiresAt: { $gt: now },
+        },
+        {
+          $set: {
+            expiresAt: newExpiresAt,
+            renewedAt: now,
+          },
+        }
+      );
+
+      const renewed = result.matchedCount === lockKeys.length;
+      return {
+        renewed,
+        lostCount: lockKeys.length - result.matchedCount,
+      };
+    } catch (err) {
+      console.error("[BookingLockService] Error renewing locks:", err.message);
+      return { renewed: false, lostCount: lockKeys.length };
+    }
+  } else {
+    // In-memory renewal
+    let renewedCount = 0;
+    for (const key of lockKeys) {
+      const existing = inMemoryLocks.get(key);
+      if (existing && existing.lockToken === lockToken && existing.expiresAt > now) {
+        existing.expiresAt = newExpiresAt;
+        renewedCount++;
+      }
+    }
+    return {
+      renewed: renewedCount === lockKeys.length,
+      lostCount: lockKeys.length - renewedCount,
+    };
+  }
+}
+
+/**
+ * Asserts that all specified lock keys are still actively held by lockToken and not expired.
+ * Throws a 409 Conflict if any lock was lost or expired.
+ */
+export async function assertLockValid(lockToken, lockKeys = []) {
+  if (!lockToken || !lockKeys || lockKeys.length === 0) return;
+
+  let db = null;
+  try {
+    db = getDb();
+  } catch {
+    // DB not available
+  }
+
+  const now = new Date();
+
+  if (db && typeof db.collection === "function") {
+    const activeCount = await db.collection("scheduling_locks").countDocuments({
+      lockToken,
+      lockKey: { $in: lockKeys },
+      expiresAt: { $gt: now },
+    });
+
+    if (activeCount !== lockKeys.length) {
+      const error = new Error(
+        "Booking lock lease was lost or expired during processing. Action aborted to prevent double-booking."
+      );
+      error.code = "LOCK_LEASE_LOST";
+      error.status = 409;
+      throw error;
+    }
+  } else {
+    for (const key of lockKeys) {
+      const existing = inMemoryLocks.get(key);
+      if (!existing || existing.lockToken !== lockToken || existing.expiresAt <= now) {
+        const error = new Error(
+          "Booking lock lease was lost or expired during processing. Action aborted to prevent double-booking."
+        );
+        error.code = "LOCK_LEASE_LOST";
+        error.status = 409;
+        throw error;
+      }
+    }
+  }
+}
+
+/**
+ * Releases all locks associated with a lockToken, optionally restricted to specific keys.
  */
 export async function releaseBookingLocks(lockToken, specificKeys = null) {
   if (!lockToken) return;
@@ -152,14 +262,18 @@ export async function releaseBookingLocks(lockToken, specificKeys = null) {
 
   if (db && typeof db.collection === "function") {
     try {
-      await db.collection("scheduling_locks").deleteMany({ lockToken });
+      const deleteFilter = { lockToken };
+      if (Array.isArray(specificKeys) && specificKeys.length > 0) {
+        deleteFilter.lockKey = { $in: specificKeys };
+      }
+      await db.collection("scheduling_locks").deleteMany(deleteFilter);
     } catch (err) {
       console.error("[BookingLockService] Error releasing locks:", err.message);
     }
   } else {
     // In-memory release
     for (const [key, val] of inMemoryLocks.entries()) {
-      if (val.lockToken === lockToken) {
+      if (val.lockToken === lockToken && (!specificKeys || specificKeys.includes(key))) {
         inMemoryLocks.delete(key);
       }
     }
@@ -168,15 +282,63 @@ export async function releaseBookingLocks(lockToken, specificKeys = null) {
 
 /**
  * High-level wrapper that executes an asynchronous critical section under atomic booking locks.
+ * Continuously renews lease via background heartbeat while executing, and verifies lock validity
+ * before completing to guarantee strict mutual exclusion.
  */
-export async function withBookingLock(participantEmails, criticalSectionFn) {
-  const lockToken = await acquireBookingLocks(participantEmails);
+export async function withBookingLock(
+  participantEmails,
+  criticalSectionFn,
+  { timeoutMs = DEFAULT_LOCK_TIMEOUT_MS, maxRetries = DEFAULT_MAX_RETRIES } = {}
+) {
+  const lockKeys = getSortedLockKeys(participantEmails);
+  const lockToken = await acquireBookingLocks(participantEmails, { timeoutMs, maxRetries });
+
+  let leaseLost = false;
+  let heartbeatTimer = null;
+
+  if (lockToken && lockKeys.length > 0) {
+    const heartbeatIntervalMs = Math.max(1000, Math.floor(timeoutMs / 3));
+    heartbeatTimer = setInterval(async () => {
+      try {
+        const { renewed } = await renewBookingLocks(lockToken, lockKeys, timeoutMs);
+        if (!renewed) {
+          leaseLost = true;
+        }
+      } catch {
+        leaseLost = true;
+      }
+    }, heartbeatIntervalMs);
+
+    if (heartbeatTimer.unref) {
+      heartbeatTimer.unref();
+    }
+  }
+
+  const checkLockValidity = async () => {
+    if (leaseLost) {
+      const error = new Error(
+        "Booking lock lease was lost or expired during processing. Action aborted to prevent double-booking."
+      );
+      error.code = "LOCK_LEASE_LOST";
+      error.status = 409;
+      throw error;
+    }
+    await assertLockValid(lockToken, lockKeys);
+  };
+
   try {
-    return await criticalSectionFn();
+    const result = await criticalSectionFn({ lockToken, assertLockValid: checkLockValidity });
+    // Final fencing check before returning result
+    if (lockToken && lockKeys.length > 0) {
+      await checkLockValidity();
+    }
+    return result;
   } finally {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+    }
     if (lockToken) {
-      await releaseBookingLocks(lockToken);
+      await releaseBookingLocks(lockToken, lockKeys);
     }
   }
 }
-
