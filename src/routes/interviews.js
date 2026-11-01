@@ -193,7 +193,7 @@ router.post("/", requireAuth, asyncHandler(async (req, res) => {
 
   let interviewDoc;
   try {
-    interviewDoc = await withBookingLock(lockParticipants, async () => {
+    interviewDoc = await withBookingLock(lockParticipants, async ({ lockToken, registerRollback }) => {
       const conflictCheck = await findInterviewConflicts({
         interviewers: allInterviewerEmails,
         seekerEmail: application.seekerEmail,
@@ -240,6 +240,7 @@ router.post("/", requireAuth, asyncHandler(async (req, res) => {
         interviewType: isPanel ? "panel" : "single",
         sequence: 0,
         interviewers: resolvedInterviewers,
+        bookingLockToken: lockToken,
         history: [
           {
             action: "proposed",
@@ -254,6 +255,13 @@ router.post("/", requireAuth, asyncHandler(async (req, res) => {
 
       const result = await db.collection("interviews").insertOne(doc);
       doc._id = result.insertedId;
+
+      if (typeof registerRollback === "function") {
+        registerRollback(async () => {
+          await db.collection("interviews").deleteOne({ _id: doc._id, bookingLockToken: lockToken });
+        });
+      }
+
       return doc;
     });
   } catch (err) {
@@ -552,7 +560,7 @@ router.patch("/:id/participants", requireAuth, asyncHandler(async (req, res) => 
     // Check time conflict and atomically persist newly added panelist under booking lock
     let updated;
     try {
-      updated = await withBookingLock([normalizedEmail], async () => {
+      updated = await withBookingLock([normalizedEmail], async ({ lockToken, registerRollback }) => {
         const conflict = await findInterviewConflicts({
           interviewers: [normalizedEmail],
           startDate: interview.scheduledAt,
@@ -578,6 +586,22 @@ router.patch("/:id/participants", requireAuth, asyncHandler(async (req, res) => 
           invitedAt: new Date(),
         };
 
+        // Snapshot previous state for compensation rollback if lease is lost
+        const previousInterviewers = interview.interviewers || [];
+        const previousType = interview.interviewType;
+
+        if (typeof registerRollback === "function") {
+          registerRollback(async () => {
+            await db.collection("interviews").updateOne(
+              { _id },
+              {
+                $set: { interviewers: previousInterviewers, interviewType: previousType },
+                $pop: { history: 1 },
+              }
+            );
+          });
+        }
+
         // Add or reactivate participant
         const existingIndex = (interview.interviewers || []).findIndex(
           (i) => i.email.toLowerCase() === normalizedEmail
@@ -592,6 +616,7 @@ router.patch("/:id/participants", requireAuth, asyncHandler(async (req, res) => 
                 "interviewers.$.role": newParticipant.role,
                 "interviewers.$.name": newParticipant.name,
                 "interviewers.$.invitedAt": new Date(),
+                bookingLockToken: lockToken,
                 updatedAt: new Date(),
               },
               $push: {
@@ -609,7 +634,7 @@ router.patch("/:id/participants", requireAuth, asyncHandler(async (req, res) => 
           return await db.collection("interviews").findOneAndUpdate(
             { _id },
             {
-              $set: { interviewType: "panel", updatedAt: new Date() },
+              $set: { interviewType: "panel", bookingLockToken: lockToken, updatedAt: new Date() },
               $push: {
                 interviewers: newParticipant,
                 history: {
@@ -866,7 +891,7 @@ router.patch("/:id/reschedule", requireAuth, asyncHandler(async (req, res) => {
 
   let updated;
   try {
-    updated = await withBookingLock(lockParticipants, async () => {
+    updated = await withBookingLock(lockParticipants, async ({ lockToken, registerRollback }) => {
       const conflict = await findInterviewConflicts({
         interviewers: interviewerEmails,
         seekerEmail: interview.seekerEmail,
@@ -907,6 +932,7 @@ router.patch("/:id/reschedule", requireAuth, asyncHandler(async (req, res) => {
         endAt: newEndDate,
         status: "Rescheduled",
         sequence: nextSequence,
+        bookingLockToken: lockToken,
         updatedAt: new Date(),
       };
 
@@ -923,6 +949,29 @@ router.patch("/:id/reschedule", requireAuth, asyncHandler(async (req, res) => {
             responseStatus: isRescheduler ? "Accepted" : "Pending",
             respondedAt: isRescheduler ? new Date() : null,
           };
+        });
+      }
+
+      // Snapshot previous state for rollback if lease was lost during/after persistence
+      const originalState = {
+        scheduledAt: interview.scheduledAt,
+        durationMinutes: interview.durationMinutes,
+        endAt: interview.endAt,
+        status: interview.status,
+        sequence: interview.sequence,
+        interviewers: interview.interviewers,
+        bookingLockToken: interview.bookingLockToken,
+      };
+
+      if (typeof registerRollback === "function") {
+        registerRollback(async () => {
+          await db.collection("interviews").updateOne(
+            { _id },
+            {
+              $set: originalState,
+              $pop: { history: 1 },
+            }
+          );
         });
       }
 

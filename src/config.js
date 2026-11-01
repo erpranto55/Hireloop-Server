@@ -8,6 +8,7 @@ export const config = {
   clientOrigin: process.env.CLIENT_ORIGIN || "http://localhost:3000",
   mongoUri: process.env.MONGODB_URI,
   dbName: process.env.DB_NAME || "hireloop",
+  initialSuperAdminEmail: (process.env.INITIAL_SUPER_ADMIN_EMAIL || "").toLowerCase().trim(),
   stripeSecretKey: process.env.STRIPE_SECRET_KEY || "",
   stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET || "",
   emailFrom: process.env.EMAIL_FROM || "HireLoop <notifications@hireloop.dev>",

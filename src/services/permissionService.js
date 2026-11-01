@@ -241,18 +241,25 @@ export async function migrateLegacyAdmins() {
   let hasBootstrappedSuperAdmin = Boolean(existingSuperAdmin);
   const trustedBootstrapEmail = (process.env.INITIAL_SUPER_ADMIN_EMAIL || "").toLowerCase().trim();
 
+  // In production, require explicit bootstrap configuration if unmigrated admins exist and no active super admin exists
+  if (process.env.NODE_ENV === "production" && !existingSuperAdmin && !trustedBootstrapEmail) {
+    throw new Error(
+      "Production security requirement: INITIAL_SUPER_ADMIN_EMAIL must be configured in environment when no active Super Administrator exists."
+    );
+  }
+
   for (let i = 0; i < unmigratedAdmins.length; i++) {
     const admin = unmigratedAdmins[i];
     const adminEmail = (admin.email || "").toLowerCase().trim();
 
     // Determine target role:
-    // Only elevate to super_admin if no active super_admin exists AND (email matches bootstrap email OR is the single earliest account)
+    // Only elevate to super_admin if no active super_admin exists AND (email matches bootstrap email OR is the earliest account in non-production)
     let assignedRole = ADMIN_ROLES.SUPPORT_MODERATOR;
     if (!hasBootstrappedSuperAdmin) {
       if (trustedBootstrapEmail && adminEmail === trustedBootstrapEmail) {
         assignedRole = ADMIN_ROLES.SUPER_ADMIN;
         hasBootstrappedSuperAdmin = true;
-      } else if (!trustedBootstrapEmail && i === 0) {
+      } else if (!trustedBootstrapEmail && i === 0 && process.env.NODE_ENV !== "production") {
         assignedRole = ADMIN_ROLES.SUPER_ADMIN;
         hasBootstrappedSuperAdmin = true;
       }

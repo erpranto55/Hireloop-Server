@@ -47,13 +47,15 @@ export async function processPendingOutbox(limit = BATCH_SIZE) {
       ],
     };
 
+    const attemptClaimId = `${WORKER_ID}_att_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
     const claimed = await db.collection("email_outbox").findOneAndUpdate(
       claimFilter,
       {
         $set: {
           status: "processing",
           lockedAt: now,
-          lockedBy: WORKER_ID,
+          lockedBy: attemptClaimId,
           updatedAt: now,
         },
       },
@@ -65,7 +67,7 @@ export async function processPendingOutbox(limit = BATCH_SIZE) {
     }
 
     try {
-      await deliverOutboxItem(claimed._id, WORKER_ID);
+      await deliverOutboxItem(claimed._id, attemptClaimId);
       processedCount++;
     } catch (err) {
       // deliverOutboxItem handles failure updating status to failed / pending with exponential backoff

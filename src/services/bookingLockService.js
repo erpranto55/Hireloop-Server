@@ -295,6 +295,10 @@ export async function withBookingLock(
 
   let leaseLost = false;
   let heartbeatTimer = null;
+  const rollbackFns = [];
+  const registerRollback = (fn) => {
+    if (typeof fn === "function") rollbackFns.push(fn);
+  };
 
   if (lockToken && lockKeys.length > 0) {
     const heartbeatIntervalMs = Math.max(1000, Math.floor(timeoutMs / 3));
@@ -327,12 +331,26 @@ export async function withBookingLock(
   };
 
   try {
-    const result = await criticalSectionFn({ lockToken, assertLockValid: checkLockValidity });
+    const result = await criticalSectionFn({
+      lockToken,
+      assertLockValid: checkLockValidity,
+      registerRollback,
+    });
     // Final fencing check before returning result
     if (lockToken && lockKeys.length > 0) {
       await checkLockValidity();
     }
     return result;
+  } catch (err) {
+    // If critical section or checkLockValidity failed, execute compensation rollbacks
+    for (const rollback of rollbackFns) {
+      try {
+        await rollback();
+      } catch (rbErr) {
+        console.error("[BookingLockService] Rollback error:", rbErr.message);
+      }
+    }
+    throw err;
   } finally {
     if (heartbeatTimer) {
       clearInterval(heartbeatTimer);

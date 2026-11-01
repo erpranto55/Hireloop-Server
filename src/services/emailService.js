@@ -662,7 +662,7 @@ export const emailTemplates = {
  * Sends an email using the configured external provider (Resend or SMTP)
  * or records as simulated in dev/test environment without external credentials.
  */
-async function sendViaProvider({ to, subject, html, text, headers }) {
+async function sendViaProvider({ to, subject, html, text, headers, idempotencyKey = null }) {
   // 1. Resend API integration (if RESEND_API_KEY is configured)
   if (config.resendApiKey && config.resendApiKey !== "re_placeholder_key") {
     const payload = {
@@ -676,12 +676,17 @@ async function sendViaProvider({ to, subject, html, text, headers }) {
       payload.headers = headers;
     }
 
+    const reqHeaders = {
+      "Authorization": `Bearer ${config.resendApiKey}`,
+      "Content-Type": "application/json",
+    };
+    if (idempotencyKey) {
+      reqHeaders["Idempotency-Key"] = idempotencyKey;
+    }
+
     const response = await fetch("https://api.resend.com/emails", {
       method: "POST",
-      headers: {
-        "Authorization": `Bearer ${config.resendApiKey}`,
-        "Content-Type": "application/json",
-      },
+      headers: reqHeaders,
       body: JSON.stringify(payload),
     });
 
@@ -840,7 +845,7 @@ export async function deliverOutboxItem(outboxId, workerId = null) {
     return null;
   }
 
-  const claimId = workerId || `worker_${process.pid}_${Math.random().toString(36).substring(2, 7)}`;
+  const claimId = workerId || `direct_att_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
   const now = new Date();
   const LEASE_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -907,12 +912,19 @@ export async function deliverOutboxItem(outboxId, workerId = null) {
     headers["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click";
   }
 
+  // Build stable idempotency key for provider deduplication
+  const stableIdempotencyKey = item.idempotencyKey || item._id.toString();
+  if (stableIdempotencyKey && !headers["Message-ID"]) {
+    headers["Message-ID"] = `<${stableIdempotencyKey}@hireloop.dev>`;
+  }
+
   try {
     const result = await sendViaProvider({
       to: item.to,
       subject: item.subject,
       html: item.html,
       headers,
+      idempotencyKey: stableIdempotencyKey,
     });
 
     await db.collection("email_outbox").updateOne(

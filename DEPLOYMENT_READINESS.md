@@ -2,21 +2,20 @@
 
 ## 1. System Architecture & Intended Staging Topology
 
-HireLoop operates a decoupled full-stack architecture designed for high availability, zero-trust authorization, and restart resilience.
+HireLoop operates a decoupled full-stack architecture designed for enterprise recruitment workflows, zero-trust tenant isolation, and restart-resilient background processing.
 
-- **Frontend (`hireloop-client`)**: Next.js 16 (App Router with Turbopack), React 19, Tailwind CSS. Consumes the backend API with credentials and Bearer token fallback.
-- **Backend (`hireloop-server`)**: Node.js & Express API with MongoDB persistence, distributed atomic locks, in-process unified scheduler, and transactional email outbox.
+- **Frontend (`hireloop-client`)**: Next.js 16 (App Router with Turbopack), React 19, Tailwind CSS. Consumes backend endpoints using HTTP-only cookies (`better-auth.session_token` / `__Secure-better-auth.session_token`) and Bearer token fallback.
+- **Backend (`hireloop-server`)**: Node.js & Express API with MongoDB persistence, distributed atomic locks with lease renewal, unified background scheduler, and transactional email outbox.
 - **Data Tier**: MongoDB (Atlas Replica Set recommended). Provides atomic multi-document operations and TTL eviction.
-- **Billing**: Stripe Checkout and webhook lifecycle integration.
-- **Real-Time Communication**: Server-Sent Events (SSE) stream for notification delivery and candidate messaging.
+- **Billing Integration**: Stripe Checkout and webhook lifecycle integration.
+- **Real-Time Communication**: Server-Sent Events (SSE) stream for instant notifications and candidate messaging.
 
 ### Intended Staging Topology
-- **API Server Replicas**: Backend is stateless regarding HTTP requests and can safely run across 1 to N replicas behind a reverse proxy/load balancer (e.g. AWS ALB, Nginx, Fly.io, Cloudflare).
+- **API Server Replicas**: The Express backend is stateless with respect to HTTP requests and can scale across 1 to N replicas behind a reverse proxy (e.g. AWS ALB, Nginx, Cloudflare, Fly.io).
 - **Background Scheduler & Outbox Worker**:
   - The scheduler runs within the Express process (`startScheduler()`), executing every 30 seconds.
-  - Background workers utilize **atomic document leasing** (`status: "processing"`, `lockedBy: WORKER_ID`, `lockedAt: new Date()`) with automatic 5-minute lease timeout recovery. Multiple replicas can safely execute concurrently without duplicate delivery.
-  - When running in auto-scaling environments that scale to zero when idle (e.g. AWS Lambda / Cloud Run), run a dedicated container for background workers or utilize a cron ping to keep the scheduler active.
-- **Reverse Proxy**: Express is configured with `app.set("trust proxy", 1)` to correctly parse `req.ip` from `X-Forwarded-For` for sliding-window rate limiting.
+  - Background outbox workers utilize **unique attempt-specific atomic document leasing** (`status: "processing"`, `lockedBy: WORKER_ID_att_<ts>_<rand>`, `lockedAt: new Date()`) with automatic 5-minute lease timeout recovery. Multiple replicas can safely execute concurrently without duplicate email delivery.
+- **Reverse Proxy**: Express is configured with `app.set("trust proxy", 1)` to correctly parse `req.ip` from `X-Forwarded-For` for sliding-window rate limiting (`rateLimiter.js`).
 
 ```mermaid
 flowchart TD
@@ -25,8 +24,8 @@ flowchart TD
     Proxy -->|Load Balanced HTTP| Server2["HireLoop Express Replica 2"]
     Server1 -->|Mongoose / Mongo Driver| Mongo[("MongoDB Atlas Replica Set")]
     Server2 -->|Mongoose / Mongo Driver| Mongo
-    Server1 -->|Distributed Locks| Locks[("scheduling_locks (TTL)")]
-    Server2 -->|Distributed Locks| Locks
+    Server1 -->|Distributed Locks & Fencing| Locks[("scheduling_locks (TTL)")]
+    Server2 -->|Distributed Locks & Fencing| Locks
     Server1 -->|Leased Worker| Outbox[("email_outbox")]
     Server2 -->|Leased Worker| Outbox
     Server1 -->|Webhooks & Checkout| Stripe["Stripe Billing API"]
@@ -34,51 +33,39 @@ flowchart TD
 
 ---
 
-## 2. Environment Configuration & Secrets Management
+## 2. Complete Environment Variable Inventory
 
-Separate `.env` files must be maintained for Development, Staging, and Production. **Never commit actual `.env` files or secrets to source control.**
+Every environment variable that actually exists across `hireloop-client` and `hireloop-server` is cataloged below:
 
-### `hireloop-client` Environment Variables
-| Variable | Required | Staging Example | Production Example | Description |
+| Variable | Required | Service | Purpose | Staging Configuration Status |
 | :--- | :--- | :--- | :--- | :--- |
-| `NEXT_PUBLIC_API_URL` | Yes | `https://staging-api.hireloop.dev` | `https://api.hireloop.dev` | Public URL of Express backend API |
-| `BETTER_AUTH_SECRET` | Yes | `[32+ character hex string]` | `[32+ character hex string]` | High-entropy session encryption secret |
-| `BETTER_AUTH_URL` | Yes | `https://staging.hireloop.dev` | `https://hireloop.dev` | Canonical client URL for auth redirects |
-| `MONGODB_URI` | Yes | `mongodb+srv://...` | `mongodb+srv://...` | MongoDB connection URI for Better Auth |
-| `AUTH_DB_NAME` | Yes | `hireloop_staging` | `hireloop_prod` | Database name for auth sessions and users |
-
-### `hireloop-server` Environment Variables
-| Variable | Required | Staging Example | Production Example | Description |
-| :--- | :--- | :--- | :--- | :--- |
-| `PORT` | Yes | `5001` | `5001` (or `$PORT`) | Port on which Express API listens |
-| `NODE_ENV` | Yes | `staging` | `production` | Runtime mode (`production` enables security guards) |
-| `CLIENT_ORIGIN` | Yes | `https://staging.hireloop.dev` | `https://hireloop.dev` | Allowed CORS origin for credentials |
-| `MONGODB_URI` | Yes | `mongodb+srv://...` | `mongodb+srv://...` | Core application database connection URI |
-| `DB_NAME` | Yes | `hireloop_staging` | `hireloop_prod` | Core recruitment application database |
-| `INITIAL_SUPER_ADMIN_EMAIL`| Optional| `admin@hireloop.dev` | `security-ops@hireloop.com` | Explicit bootstrap email for initial `super_admin` |
-| `STRIPE_SECRET_KEY` | Yes | `sk_test_...` | `sk_live_...` | Stripe secret key for subscriptions |
-| `STRIPE_WEBHOOK_SECRET` | Yes | `whsec_...` | `whsec_...` | Webhook signature signing secret |
-| `STRIPE_PRICE_SEEKER_PRO` | Yes | `price_test_...` | `price_...` | Stripe Price ID for Seeker Pro |
-| `STRIPE_PRICE_SEEKER_PREMIUM` | Yes | `price_test_...` | `price_...` | Stripe Price ID for Seeker Premium |
-| `STRIPE_PRICE_RECRUITER_GROWTH`| Yes | `price_test_...` | `price_...` | Stripe Price ID for Recruiter Growth |
-| `STRIPE_PRICE_RECRUITER_ENTERPRISE`| Yes | `price_test_...` | `price_...` | Stripe Price ID for Recruiter Enterprise |
-| `EMAIL_FROM` | Yes | `HireLoop Staging <test@hireloop.dev>`| `HireLoop <notifications@hireloop.dev>`| Transactional email sender address |
-| `RESEND_API_KEY` | Optional | `re_test_...` | `re_live_...` | Primary email delivery provider |
-| `SMTP_HOST` | Optional | `smtp.mailgun.org` | `smtp.sendgrid.net` | Fallback SMTP host |
-| `SMTP_PORT` | Optional | `587` | `587` | Fallback SMTP port |
-| `SMTP_USER` | Optional | `postmaster@...` | `apikey` | Fallback SMTP username |
-| `SMTP_PASS` | Optional | `[secret]` | `[secret]` | Fallback SMTP password |
-| `SMTP_SECURE` | Optional | `false` | `false` | TLS toggle (`true` for port 465) |
-
-### Cryptographic Secret Generation
-To generate secure values without exposing real credentials:
-```bash
-# Generate 32-byte hexadecimal secret for BETTER_AUTH_SECRET
-openssl rand -hex 32
-
-# Verify session signing secret strength (minimum 32 characters)
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-```
+| `NEXT_PUBLIC_API_URL` | Yes | Frontend | Root URL of Express backend API for browser & SSR | Configured (`http://localhost:5001` or staging domain) |
+| `BETTER_AUTH_SECRET` | Yes | Frontend | 32+ char high-entropy key for session token signing | Configured |
+| `BETTER_AUTH_URL` | Yes | Frontend | Canonical origin for client authentication callbacks | Configured (`http://localhost:3000` or staging domain) |
+| `NEXT_PUBLIC_BETTER_AUTH_URL`| No | Frontend | Client-side fallback for Better Auth origin | Optional |
+| `MONGODB_URI` | Yes | Both | MongoDB connection string (Replica Set recommended) | Configured |
+| `AUTH_DB_NAME` | No | Frontend | Database name for Better Auth collections (default: `hireloop`) | Configured (`hireloop_db`) |
+| `PORT` | No | Backend | TCP port Express server listens on (default: `5001`) | Configured (`5001`) |
+| `NODE_ENV` | No | Backend | Runtime mode (`development`, `staging`, `production`) | Configured (`staging` / `development`) |
+| `CLIENT_ORIGIN` | Yes | Backend | Allowed CORS origin for credentials and cookies | Configured (`http://localhost:3000` or staging domain) |
+| `DB_NAME` | No | Backend | Core recruitment database name (default: `hireloop`) | Configured (`hireloop_db`) |
+| `INITIAL_SUPER_ADMIN_EMAIL`| Required in prod | Backend | Explicit bootstrap email for initial `super_admin` | Configured in `.env.example` |
+| `STRIPE_SECRET_KEY` | Yes (Billing) | Backend | Stripe API Secret Key (use test mode `sk_test_...`) | Configured (`sk_test_...`) |
+| `STRIPE_WEBHOOK_SECRET` | Yes (Billing) | Backend | Stripe Webhook Signing Secret (`whsec_...`) | Required via Stripe CLI / Dashboard |
+| `STRIPE_PRICE_SEEKER_PRO` | Yes (Billing) | Backend | Stripe Price ID for Seeker Pro plan | Configured (test placeholder) |
+| `STRIPE_PRICE_SEEKER_PREMIUM` | Yes (Billing) | Backend | Stripe Price ID for Seeker Premium plan | Configured (test placeholder) |
+| `STRIPE_PRICE_RECRUITER_GROWTH`| Yes (Billing) | Backend | Stripe Price ID for Recruiter Growth plan | Configured (test placeholder) |
+| `STRIPE_PRICE_RECRUITER_ENTERPRISE`| Yes (Billing)| Backend| Stripe Price ID for Recruiter Enterprise plan | Configured (test placeholder) |
+| `EMAIL_FROM` | No | Backend | Default sender address for transactional emails | Configured (`notifications@hireloop.dev`) |
+| `RESEND_API_KEY` | Optional | Backend | Resend API key for live transactional email delivery | Optional (simulated when omitted) |
+| `SMTP_HOST` | Optional | Backend | Fallback SMTP relay host | Optional |
+| `SMTP_PORT` | Optional | Backend | Fallback SMTP port (default: `587`) | Optional |
+| `SMTP_USER` | Optional | Backend | Fallback SMTP username | Optional |
+| `SMTP_PASS` | Optional | Backend | Fallback SMTP password | Optional |
+| `SMTP_SECURE` | Optional | Backend | TLS toggle for SMTP (`true` for port 465) | Optional |
+| `VAPID_PUBLIC_KEY` | Optional | Backend | Web Push VAPID public key | Optional (graceful fallback when absent) |
+| `VAPID_PRIVATE_KEY` | Optional | Backend | Web Push VAPID private key | Optional (graceful fallback when absent) |
+| `VAPID_SUBJECT` | Optional | Backend | Web Push mailto/URL subject contact | Optional |
 
 ---
 
@@ -105,42 +92,45 @@ Indexes are automatically created on database connection during server startup:
    - `audit_logs`: `{ timestamp: -1 }`, `{ companyId: 1, timestamp: -1 }`
    - `reports`: `{ targetType: 1, targetId: 1 }`, `{ reporterEmail: 1, targetId: 1 }`
 
-### Safe Startup Migrations
+### Safe Startup Migrations & Bootstrap Rules
 - **`migrateLegacyAdmins()`**:
   - Idempotent and safe to rerun on every deployment.
-  - Elevates the designated `INITIAL_SUPER_ADMIN_EMAIL` (or the earliest single admin account if none exists) to `super_admin`.
-  - Safely maps all other unmigrated admins to the least-privilege `support_moderator` role.
-  - Audits every modification in `audit_logs`.
+  - If `NODE_ENV === "production"`, startup **strictly requires** `INITIAL_SUPER_ADMIN_EMAIL` when no active super admin exists, failing safely if omitted.
+  - Only the explicitly configured email receives `super_admin`.
+  - All other unassigned legacy admin accounts strictly receive `support_moderator` (least-privilege default).
+  - Every migration is audited in `audit_logs`.
 - **`migrateCompanyMemberships()`**:
   - Idempotent backfill ensuring every verified company owner has an active `company_owner` membership record in `company_memberships`.
 - **Demo Seeding Guard**:
   - In `production` mode (`NODE_ENV === "production"`), mock demo companies and placeholder jobs are **strictly suppressed**, ensuring clean customer databases.
 
-### Pre-Deployment Backup Checklist
-```bash
-# Dump staging or production database before migration or release
-mongodump --uri="<MONGODB_URI>" --db="<DB_NAME>" --out="./backups/backup-$(date +%Y%m%d%H%M%S)"
-```
-
 ---
 
-## 4. Distributed Concurrency & Worker Lease Recovery
+## 4. Distributed Concurrency & Fencing Boundary Strategy
 
 ### Interview Booking Mutual Exclusion (`bookingLockService.js`)
 1. **Deterministic Order**: Lock keys are normalized (`participant:<email>`), deduplicated, and sorted lexicographically before acquisition, eliminating deadlock risks across multi-party panels.
 2. **Heartbeat Lease Renewal**: A background timer runs every `timeoutMs / 3` (~3 seconds for a 10s lease) extending `expiresAt` while the operation is in flight.
-3. **Fencing Token Assertion**: If a lock lease is lost or stolen, `assertLockValid` rejects the commit with a `409 Conflict` (`LOCK_LEASE_LOST`), preventing delayed workers from writing to the database.
-4. **Scoped Release**: `releaseBookingLocks` strictly scopes deletion to `{ lockToken, lockKey: { $in: lockKeys } }`, ensuring a worker never deletes another worker's acquired lock.
-
-### Email Outbox Lease & Crash Recovery (`outboxWorker.js` & `emailService.js`)
-1. **Atomic Lease Claim**: Both background polling workers and immediate asynchronous callers acquire items via `findOneAndUpdate` on `{ status: "pending" }` or expired processing leases (`lockedAt <= now - 5m`).
-2. **No Concurrent Duplicate Sends**: Two workers can never claim or deliver the same outbox record simultaneously.
-3. **Pre-Delivery Preference Check**: `shouldDeliverEmail` re-validates recipient preferences right before provider transmission. If a user disabled notifications while the item was queued, it is marked as `suppressed` without external delivery.
-4. **Graceful Lease Timeout Recovery**: If an instance crashes mid-delivery, the record is automatically reclaimed after the 5-minute lease period.
+3. **Fencing Token Assertion (`assertLockValid`)**: If an execution stalls or a lock is lost, `assertLockValid()` throws a 409 Conflict with code `LOCK_LEASE_LOST`.
+4. **Persistence Compensation Rollbacks**: If a delayed worker wakes up after lease loss and attempts an insert or update, `checkLockValidity()` aborts the transaction and immediately triggers registered compensation rollbacks (e.g. deleting the stale interview document or restoring previous state).
+5. **Scoped Release**: `releaseBookingLocks` strictly scopes deletion to `{ lockToken, lockKey: { $in: lockKeys } }`, ensuring a worker never deletes another worker's acquired lock.
 
 ---
 
-## 5. Health Probes, Monitoring & Diagnostics
+## 5. Email Outbox — Real Delivery & Failure Recovery
+
+### A. Attempt-Specific Atomic Leasing (`outboxWorker.js` & `emailService.js`)
+- Every claim generates a unique attempt identifier: `${WORKER_ID}_att_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`.
+- Concurrent delivery from direct async calls and background workers cannot collide.
+
+### B. Provider Idempotency & Ambiguous Outcomes
+- **Resend API**: Passes native `Idempotency-Key` header derived from `outboxItem.idempotencyKey || outboxItem._id.toString()`. If a worker crashes after Resend accepted the email but before writing to MongoDB, the recovering worker passes the same key, preventing duplicate customer emails.
+- **SMTP Relay**: Passes RFC 5322 `Message-ID: <<idempotencyKey>@hireloop.dev>`. Because SMTP wire protocol (RFC 5321) lacks native idempotency, duplicate delivery is an inherent at-least-once risk if a crash occurs between SMTP `250 OK` and the database write.
+- **Preference Re-Check**: Validates `shouldDeliverEmail` right before provider transmission. If a user disabled notifications while queued, the message is marked `suppressed`.
+
+---
+
+## 6. Health Probes, Monitoring & Diagnostics
 
 HireLoop exposes two distinct operational endpoints for monitoring and orchestrators:
 
@@ -168,7 +158,7 @@ HireLoop exposes two distinct operational endpoints for monitoring and orchestra
     },
     "scheduler": {
       "active": true,
-      "lastCycleAt": "2026-10-30T14:55:00.000Z"
+      "lastCycleAt": "2026-11-01T21:00:00.000Z"
     },
     "outboxWorker": {
       "active": true
@@ -180,21 +170,21 @@ HireLoop exposes two distinct operational endpoints for monitoring and orchestra
 
 ### 3. Graceful Shutdown
 On `SIGTERM` or `SIGINT`:
-1. `stopScheduler()` and `stopOutboxWorker()` immediately stop background timer loops.
+1. `stopScheduler()` and `stopOutboxWorker()` stop background timer loops.
 2. `server.close()` stops accepting new HTTP connections and waits for active requests to finish.
 3. A 10-second fail-safe timeout prevents hung processes from stalling rolling deployments.
 4. `closeDatabase()` cleans up MongoDB connection pools before process exit.
 
 ---
 
-## 6. Build, Verification & Deployment Commands
+## 7. Build, Verification & Deployment Commands
 
 ### Backend API (`hireloop-server`)
 ```bash
 # 1. Install dependencies
 npm ci
 
-# 2. Run automated test suite (143 tests)
+# 2. Run automated test suite (154 tests)
 npm test
 
 # 3. Start server
@@ -221,21 +211,6 @@ npm start
 
 ---
 
-## 7. Staging Smoke Test Checklist
-
-Once staging services are deployed and running, execute the following smoke tests:
-
-- [ ] **Liveness**: `curl -f https://staging-api.hireloop.dev/health` returns status `ok`.
-- [ ] **Readiness**: `curl -f https://staging-api.hireloop.dev/ready` returns status `ready` with active scheduler.
-- [ ] **Auth Preflight**: Open `https://staging.hireloop.dev/signin`, verify sign-in page loads and returns session cookie.
-- [ ] **Public Job Discovery**: Open `https://staging.hireloop.dev/jobs`, verify vacancies load.
-- [ ] **Workspace Isolation**: Authenticate as Recruiter Company A, attempt to access Company B job `/dashboard/jobs/:id/applicants`, confirm `403 Forbidden`.
-- [ ] **Resume Access**: Attempt to download applicant resume as an unrelated recruiter, confirm `403 Forbidden`.
-- [ ] **Double-Booking Guard**: Schedule an interview, confirm conflicting appointment slot returns `409 Conflict`.
-- [ ] **Stripe Webhook (Test Mode)**: Send test webhook with valid signature, confirm idempotent processing in `webhook_events`.
-
----
-
 ## 8. Rollback & Disaster Recovery Procedures
 
 1. **Traffic Rollback**:
@@ -245,7 +220,7 @@ Once staging services are deployed and running, execute the following smoke test
    - Schema modifications in HireLoop are non-destructive and backward compatible. Rolling back the application code does not require rolling back database indexes.
 3. **Stale Lock Recovery**:
    - If an unexpected cluster failure occurs, locks automatically expire via MongoDB TTL within 10 seconds.
-   - Manual emergency unlock (if needed):
+   - Manual emergency unlock:
      ```javascript
      db.scheduling_locks.deleteMany({ expiresAt: { $lt: new Date() } });
      ```
